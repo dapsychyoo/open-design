@@ -8668,13 +8668,16 @@ export async function startServer({
         const stages = snap?.pipeline?.stages ?? [];
         if (stages.length > 0) {
           const { loadAtomBodies } = await import('./plugins/atom-bodies.js');
-          const { renderActiveStageBlock } = await import('@open-design/contracts');
-          const blocks = [];
+          const { renderActiveStageBlocks } = await import('@open-design/contracts');
+          const stageViews = [];
           for (const stage of stages) {
             const bodies = await loadAtomBodies(db, stage.atoms ?? []);
-            const block = renderActiveStageBlock({ stageId: stage.id, bodies });
-            if (block.trim().length > 0) blocks.push(block);
+            stageViews.push({ stageId: stage.id, bodies });
           }
+          // Issue #6238 — the builder inlines each atom body exactly
+          // once across the pipeline; stages that re-declare an atom
+          // get a one-line back-reference instead of the full body.
+          const blocks = renderActiveStageBlocks(stageViews);
           if (blocks.length > 0) activeStageBlocks = blocks;
         }
       } catch (err) {
