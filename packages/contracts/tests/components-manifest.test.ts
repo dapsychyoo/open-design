@@ -61,6 +61,68 @@ describe('components manifest extraction', () => {
     expect(manifest.literals.pixelValues).toBe(1);
   });
 
+  it('attributes token references to every consecutive flat rule', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'issue-6224',
+      fixtureHtml: `
+        <style>
+          :root { --a: #111; --b: #222; --c: #333; --d: #444; }
+          .btn-a { color: var(--a); }
+          .btn-b { color: var(--b); }
+          .btn-c { color: var(--c); }
+          .btn-d { color: var(--d); }
+        </style>
+        <button class="btn-a">x</button>
+      `,
+    });
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.selectors).toEqual(['.btn-a', '.btn-b', '.btn-c', '.btn-d']);
+    expect(buttons?.tokenReferences).toEqual(['--a', '--b', '--c', '--d']);
+  });
+
+  it('attributes tokens inside nested rules to real selectors, never to declaration text', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'issue-6224',
+      fixtureHtml: `
+        <style>
+          :root { --chip-bg: #eee; --chip-hover: #ddd; }
+          .chip-demo { background: var(--chip-bg); &:hover { background: var(--chip-hover); } }
+        </style>
+        <span class="chip-demo">chip</span>
+      `,
+    });
+
+    expect(manifest.selectors).toEqual(['.chip-demo', '.chip-demo:hover']);
+
+    const badges = manifest.groups.find((group) => group.id === 'badges');
+    expect(badges?.selectors).toContain('.chip-demo');
+    expect(badges?.tokenReferences).toEqual(['--chip-bg', '--chip-hover']);
+  });
+
+  it('does not classify utility classes into unrelated groups via substring matches', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'issue-6224',
+      fixtureHtml: `
+        <style>
+          .card-demo { padding: 1rem; }
+          .select-none { user-select: none; }
+        </style>
+        <div class="card-demo grid-cols-2 transition-transform select-none">x</div>
+      `,
+    });
+
+    const inputs = manifest.groups.find((group) => group.id === 'inputs');
+    expect(inputs?.selectors).toEqual([]);
+    expect(inputs?.present).toBe(false);
+
+    const layout = manifest.groups.find((group) => group.id === 'layout');
+    expect(layout?.present).toBe(false);
+
+    const cards = manifest.groups.find((group) => group.id === 'cards');
+    expect(cards?.present).toBe(true);
+  });
+
   it('can render a concise prompt summary from a manifest', () => {
     const manifest = extractComponentsManifest({
       brandId: 'sample',
