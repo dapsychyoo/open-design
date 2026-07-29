@@ -76,14 +76,14 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
     id: 'buttons',
     label: 'Buttons and calls to action',
     selectorMatchers: [/\bbutton\b/i, /\.btn(?:\b|[-_:])/i, /\[type=["']?(?:button|submit|reset)/i],
-    classMatchers: [/^btn(?:$|-)/i, /button/i, /cta/i],
+    classMatchers: [/^btn(?:$|-)/i, /^button(?:$|-)/i, /^cta(?:$|-)/i],
     elementMatchers: [/^button$/i],
   },
   {
     id: 'inputs',
     label: 'Form fields and controls',
-    selectorMatchers: [/\binput\b/i, /\btextarea\b/i, /\bselect\b/i, /\.field(?:\b|[-_:])/i, /\blabel\b/i],
-    classMatchers: [/^field(?:$|-)/i, /input/i, /control/i, /form/i],
+    selectorMatchers: [/\binput\b/i, /\btextarea\b/i, /(?:^|[\s>+~,(])select(?:$|[\s>+~,.:#[)])/i, /\.field(?:\b|[-_:])/i, /\blabel\b/i],
+    classMatchers: [/^field(?:$|-)/i, /^input(?:$|-)/i, /^control(?:$|-)/i, /^form(?:$|-)/i],
     elementMatchers: [/^(input|textarea|select|label|form)$/i],
   },
   {
@@ -97,7 +97,7 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
     id: 'badges',
     label: 'Badges, chips, and status labels',
     selectorMatchers: [/\.badge(?:\b|[-_:])/i, /\.chip(?:\b|[-_:])/i, /\.tag(?:\b|[-_:])/i, /\.pill(?:\b|[-_:])/i],
-    classMatchers: [/^badge(?:$|-)/i, /^chip(?:$|-)/i, /^tag(?:$|-)/i, /^pill(?:$|-)/i, /status/i],
+    classMatchers: [/^badge(?:$|-)/i, /^chip(?:$|-)/i, /^tag(?:$|-)/i, /^pill(?:$|-)/i, /^status(?:$|-)/i],
     elementMatchers: [],
   },
   {
@@ -111,7 +111,7 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
     id: 'keyboard',
     label: 'Keyboard hints',
     selectorMatchers: [/\bkbd\b/i, /\.kbd(?:\b|[-_:])/i],
-    classMatchers: [/^kbd(?:$|-)/i, /keyboard/i, /shortcut/i],
+    classMatchers: [/^kbd(?:$|-)/i, /^keyboard(?:$|-)/i, /^shortcut(?:$|-)/i],
     elementMatchers: [/^kbd$/i],
   },
   {
@@ -125,7 +125,7 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
     id: 'typography',
     label: 'Typography scale and text utilities',
     selectorMatchers: [/\bh[1-6]\b/i, /\.lead(?:\b|[-_:])/i, /\.eyebrow(?:\b|[-_:])/i, /\.body-(?:muted|sm|small)\b/i],
-    classMatchers: [/^lead$/i, /^eyebrow$/i, /^body-(?:muted|sm|small)$/i, /caption/i],
+    classMatchers: [/^lead$/i, /^eyebrow$/i, /^body-(?:muted|sm|small)$/i, /^caption(?:$|-)/i],
     elementMatchers: [/^h[1-6]$/i, /^p$/i],
   },
   {
@@ -139,7 +139,7 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
       /\bmain\b/i,
       /\bnav\b/i,
     ],
-    classMatchers: [/^container$/i, /^stack-\d+$/i, /^row-(?:between|center|start|end)$/i, /grid/i, /layout/i],
+    classMatchers: [/^container$/i, /^stack-\d+$/i, /^row-(?:between|center|start|end)$/i, /^grid$/i, /^layout(?:$|-)/i],
     elementMatchers: [/^(main|section|nav|header|footer)$/i],
   },
 ];
@@ -259,51 +259,27 @@ function extractStyleBlocks(html: string): string[] {
 
 function extractCssSelectors(css: string): string[] {
   const selectors = new Set<string>();
-  const commentlessCss = stripContainerAtRuleHeaders(stripCssComments(css));
-  const selectorPattern = /(?:^|[{}])\s*([^@{}][^{}]*?)\s*\{/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = selectorPattern.exec(commentlessCss)) !== null) {
-    const rawSelectorList = match[1]?.trim();
-    if (rawSelectorList == null || rawSelectorList.length === 0) continue;
-    if (rawSelectorList.includes(':root')) continue;
-    if (/^(?:from|to|\d+(?:\.\d+)?%)$/i.test(rawSelectorList)) continue;
-
-    for (const selector of splitSelectorList(rawSelectorList)) {
-      const normalized = normalizeSelector(selector);
-      if (normalized.length > 0 && !normalized.startsWith('@')) {
-        selectors.add(normalized);
-      }
+  for (const rule of collectCssRules(css)) {
+    for (const selector of rule.selectors) {
+      selectors.add(selector);
     }
   }
-
   return [...selectors].sort((a, b) => a.localeCompare(b));
 }
 
 function extractSelectorTokenReferences(css: string): Map<string, string[]> {
   const referencesBySelector = new Map<string, Set<string>>();
-  const commentlessCss = stripContainerAtRuleHeaders(stripCssComments(css));
-  const rulePattern = /(?:^|[{}])\s*([^@{}][^{}]*?)\s*\{([^{}]*)\}/g;
-  let match: RegExpExecArray | null;
 
-  while ((match = rulePattern.exec(commentlessCss)) !== null) {
-    const rawSelectorList = match[1]?.trim();
-    const rawBody = match[2] ?? '';
-    if (rawSelectorList == null || rawSelectorList.length === 0) continue;
-    if (rawSelectorList.includes(':root')) continue;
-    if (/^(?:from|to|\d+(?:\.\d+)?%)$/i.test(rawSelectorList)) continue;
-
-    const tokenReferences = extractTokenReferences(rawBody);
+  for (const rule of collectCssRules(css)) {
+    const tokenReferences = extractTokenReferences(rule.declarations);
     if (tokenReferences.length === 0) continue;
 
-    for (const selector of splitSelectorList(rawSelectorList)) {
-      const normalized = normalizeSelector(selector);
-      if (normalized.length === 0 || normalized.startsWith('@')) continue;
-      const selectorReferences = referencesBySelector.get(normalized) ?? new Set<string>();
+    for (const selector of rule.selectors) {
+      const selectorReferences = referencesBySelector.get(selector) ?? new Set<string>();
       for (const token of tokenReferences) {
         selectorReferences.add(token);
       }
-      referencesBySelector.set(normalized, selectorReferences);
+      referencesBySelector.set(selector, selectorReferences);
     }
   }
 
@@ -312,6 +288,142 @@ function extractSelectorTokenReferences(css: string): Map<string, string[]> {
       .map(([selector, references]) => [selector, [...references].sort((a, b) => a.localeCompare(b))] as const)
       .sort(([left], [right]) => left.localeCompare(right)),
   );
+}
+
+type CssRule = {
+  selectors: string[];
+  declarations: string;
+};
+
+const TRAVERSABLE_GROUP_AT_RULES = /^@(?:media|supports|container|layer|scope|starting-style)\b/i;
+
+/**
+ * Brace-depth CSS scanner. Invariant: every rule's own declarations (excluding
+ * nested-block bodies) are attributed to its resolved selector list — including
+ * rules that follow another rule or a `:root` block, and rules using CSS
+ * nesting (`&:hover { ... }`, nested grouping at-rules such as `@media` or
+ * `@starting-style`). Braces inside quoted strings (`content: '{'`, data URLs)
+ * are text, not structure. At-rules whose bodies do not describe the current
+ * selector tree (`@keyframes`, `@font-face`, ...) and `:root` rules are
+ * skipped.
+ */
+function collectCssRules(css: string): CssRule[] {
+  const rules: CssRule[] = [];
+  walkCssBlock(stripCssComments(css), [], rules);
+  return rules;
+}
+
+function walkCssBlock(body: string, selfSelectors: string[], out: CssRule[]): void {
+  let declarations = '';
+  let segment = '';
+  let index = 0;
+
+  while (index < body.length) {
+    const char = body[index];
+    if (char === '"' || char === "'") {
+      const end = findStringEnd(body, index);
+      segment += body.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
+    if (char === '{') {
+      const close = findMatchingBrace(body, index);
+      const { leadingDeclarations, prelude } = splitBlockPrelude(segment);
+      declarations += leadingDeclarations;
+      enterCssBlock(prelude.trim(), body.slice(index + 1, close), selfSelectors, out);
+      segment = '';
+      index = close + 1;
+      continue;
+    }
+    if (char === '}') {
+      declarations += segment;
+      segment = '';
+      index += 1;
+      continue;
+    }
+    segment += char;
+    index += 1;
+  }
+
+  declarations += segment;
+  if (selfSelectors.length > 0) {
+    out.push({ selectors: selfSelectors, declarations });
+  }
+}
+
+function enterCssBlock(prelude: string, body: string, parentSelectors: string[], out: CssRule[]): void {
+  if (prelude.length === 0) return;
+  if (prelude.startsWith('@')) {
+    if (TRAVERSABLE_GROUP_AT_RULES.test(prelude)) {
+      walkCssBlock(body, parentSelectors, out);
+    }
+    return;
+  }
+  if (prelude.includes(':root')) return;
+
+  const selectors = splitSelectorList(prelude)
+    .map((selector) => normalizeSelector(selector))
+    .filter((selector) => selector.length > 0);
+  const resolved = resolveNestedSelectors(selectors, parentSelectors);
+  if (resolved.length === 0) return;
+  walkCssBlock(body, resolved, out);
+}
+
+function resolveNestedSelectors(selectors: string[], parentSelectors: string[]): string[] {
+  if (parentSelectors.length === 0) return selectors;
+  return parentSelectors.flatMap((parent) =>
+    selectors.map((selector) =>
+      selector.includes('&') ? selector.replaceAll('&', parent) : `${parent} ${selector}`,
+    ),
+  );
+}
+
+function splitBlockPrelude(segment: string): { leadingDeclarations: string; prelude: string } {
+  let depth = 0;
+  let lastSemicolon = -1;
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index];
+    if (char === '(' || char === '[') depth += 1;
+    else if (char === ')' || char === ']') depth = Math.max(0, depth - 1);
+    else if (char === ';' && depth === 0) lastSemicolon = index;
+  }
+  return {
+    leadingDeclarations: segment.slice(0, lastSemicolon + 1),
+    prelude: segment.slice(lastSemicolon + 1),
+  };
+}
+
+function findMatchingBrace(source: string, openIndex: number): number {
+  let depth = 0;
+  let index = openIndex;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === '"' || char === "'") {
+      index = findStringEnd(source, index) + 1;
+      continue;
+    }
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+    index += 1;
+  }
+  return source.length;
+}
+
+/** Index of the closing quote for the string opened at `openIndex`, honoring backslash escapes. */
+function findStringEnd(source: string, openIndex: number): number {
+  const quote = source[openIndex];
+  for (let index = openIndex + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (char === quote) return index;
+  }
+  return source.length - 1;
 }
 
 function splitSelectorList(selectorList: string): string[] {
@@ -399,11 +511,25 @@ function stripRootBlocks(css: string): string {
 }
 
 function stripCssComments(css: string): string {
-  return css.replace(/\/\*[\s\S]*?\*\//g, '');
-}
-
-function stripContainerAtRuleHeaders(css: string): string {
-  return css.replace(/@(media|supports|container|layer)\b[^{]*\{/gi, '{');
+  let out = '';
+  let index = 0;
+  while (index < css.length) {
+    const char = css[index];
+    if (char === '"' || char === "'") {
+      const end = findStringEnd(css, index);
+      out += css.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
+    if (char === '/' && css[index + 1] === '*') {
+      const close = css.indexOf('*/', index + 2);
+      index = close === -1 ? css.length : close + 2;
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return out;
 }
 
 function countLiterals(css: string): ComponentManifestLiteralInventory {
