@@ -123,6 +123,87 @@ describe('components manifest extraction', () => {
     expect(cards?.present).toBe(true);
   });
 
+  it('matches select as a type selector, not as literal text in class names or attribute values', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; }
+          select { color: var(--accent); }
+          .foo select:hover { color: var(--accent); }
+          .select-none { user-select: none; }
+          [data-action='select'] { color: var(--accent); }
+        </style>
+        <div data-action="select">x</div>
+      `,
+    });
+
+    const inputs = manifest.groups.find((group) => group.id === 'inputs');
+    expect(inputs?.selectors).toEqual(['.foo select:hover', 'select']);
+    expect(inputs?.tokenReferences).toEqual(['--accent']);
+  });
+
+  it('traverses @scope and @starting-style blocks like other grouping at-rules', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --pop: #f0f; }
+          @scope (.shell) {
+            .btn { color: var(--accent); }
+          }
+          .card { background: #fff; @starting-style { background: var(--pop); } }
+        </style>
+        <button class="btn">x</button>
+      `,
+    });
+
+    expect(manifest.selectors).toEqual(['.btn', '.card']);
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.tokenReferences).toEqual(['--accent']);
+
+    const cards = manifest.groups.find((group) => group.id === 'cards');
+    expect(cards?.tokenReferences).toEqual(['--pop']);
+  });
+
+  it('treats braces and comment markers inside CSS strings as text, not structure', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --card-bg: #fff; }
+          .btn::before { content: '{'; color: var(--accent); }
+          .card { background: var(--card-bg); }
+          .chip::after { content: "}"; color: var(--accent); }
+          .kbd-hint::before { content: 'a\\'{'; color: var(--accent); }
+          .pill { content: '/*'; background-image: url('data:image/svg+xml,<svg>{}</svg>'); } /* real comment */
+          .tag { color: var(--accent); }
+        </style>
+        <button class="btn">x</button>
+      `,
+    });
+
+    expect(manifest.selectors).toEqual([
+      '.btn::before',
+      '.card',
+      '.chip::after',
+      '.kbd-hint::before',
+      '.pill',
+      '.tag',
+    ]);
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.tokenReferences).toEqual(['--accent']);
+
+    const cards = manifest.groups.find((group) => group.id === 'cards');
+    expect(cards?.tokenReferences).toEqual(['--card-bg']);
+
+    const badges = manifest.groups.find((group) => group.id === 'badges');
+    expect(badges?.selectors).toEqual(['.chip::after', '.pill', '.tag']);
+    expect(badges?.tokenReferences).toEqual(['--accent']);
+  });
+
   it('can render a concise prompt summary from a manifest', () => {
     const manifest = extractComponentsManifest({
       brandId: 'sample',

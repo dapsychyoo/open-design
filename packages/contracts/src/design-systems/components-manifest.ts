@@ -82,7 +82,7 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
   {
     id: 'inputs',
     label: 'Form fields and controls',
-    selectorMatchers: [/\binput\b/i, /\btextarea\b/i, /(?<![\w.#-])select(?![\w-])/i, /\.field(?:\b|[-_:])/i, /\blabel\b/i],
+    selectorMatchers: [/\binput\b/i, /\btextarea\b/i, /(?:^|[\s>+~,(])select(?:$|[\s>+~,.:#[)])/i, /\.field(?:\b|[-_:])/i, /\blabel\b/i],
     classMatchers: [/^field(?:$|-)/i, /^input(?:$|-)/i, /^control(?:$|-)/i, /^form(?:$|-)/i],
     elementMatchers: [/^(input|textarea|select|label|form)$/i],
   },
@@ -295,14 +295,17 @@ type CssRule = {
   declarations: string;
 };
 
-const CONDITIONAL_GROUP_AT_RULES = /^@(?:media|supports|container|layer)\b/i;
+const TRAVERSABLE_GROUP_AT_RULES = /^@(?:media|supports|container|layer|scope|starting-style)\b/i;
 
 /**
  * Brace-depth CSS scanner. Invariant: every rule's own declarations (excluding
  * nested-block bodies) are attributed to its resolved selector list — including
  * rules that follow another rule or a `:root` block, and rules using CSS
- * nesting (`&:hover { ... }`, nested conditional at-rules). Non-conditional
- * at-rules (`@keyframes`, `@font-face`, ...) and `:root` rules are skipped.
+ * nesting (`&:hover { ... }`, nested grouping at-rules such as `@media` or
+ * `@starting-style`). Braces inside quoted strings (`content: '{'`, data URLs)
+ * are text, not structure. At-rules whose bodies do not describe the current
+ * selector tree (`@keyframes`, `@font-face`, ...) and `:root` rules are
+ * skipped.
  */
 function collectCssRules(css: string): CssRule[] {
   const rules: CssRule[] = [];
@@ -317,6 +320,12 @@ function walkCssBlock(body: string, selfSelectors: string[], out: CssRule[]): vo
 
   while (index < body.length) {
     const char = body[index];
+    if (char === '"' || char === "'") {
+      const end = findStringEnd(body, index);
+      segment += body.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
     if (char === '{') {
       const close = findMatchingBrace(body, index);
       const { leadingDeclarations, prelude } = splitBlockPrelude(segment);
@@ -345,7 +354,7 @@ function walkCssBlock(body: string, selfSelectors: string[], out: CssRule[]): vo
 function enterCssBlock(prelude: string, body: string, parentSelectors: string[], out: CssRule[]): void {
   if (prelude.length === 0) return;
   if (prelude.startsWith('@')) {
-    if (CONDITIONAL_GROUP_AT_RULES.test(prelude)) {
+    if (TRAVERSABLE_GROUP_AT_RULES.test(prelude)) {
       walkCssBlock(body, parentSelectors, out);
     }
     return;
@@ -386,15 +395,35 @@ function splitBlockPrelude(segment: string): { leadingDeclarations: string; prel
 
 function findMatchingBrace(source: string, openIndex: number): number {
   let depth = 0;
-  for (let index = openIndex; index < source.length; index += 1) {
+  let index = openIndex;
+  while (index < source.length) {
     const char = source[index];
+    if (char === '"' || char === "'") {
+      index = findStringEnd(source, index) + 1;
+      continue;
+    }
     if (char === '{') depth += 1;
     else if (char === '}') {
       depth -= 1;
       if (depth === 0) return index;
     }
+    index += 1;
   }
   return source.length;
+}
+
+/** Index of the closing quote for the string opened at `openIndex`, honoring backslash escapes. */
+function findStringEnd(source: string, openIndex: number): number {
+  const quote = source[openIndex];
+  for (let index = openIndex + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (char === quote) return index;
+  }
+  return source.length - 1;
 }
 
 function splitSelectorList(selectorList: string): string[] {
@@ -482,7 +511,25 @@ function stripRootBlocks(css: string): string {
 }
 
 function stripCssComments(css: string): string {
-  return css.replace(/\/\*[\s\S]*?\*\//g, '');
+  let out = '';
+  let index = 0;
+  while (index < css.length) {
+    const char = css[index];
+    if (char === '"' || char === "'") {
+      const end = findStringEnd(css, index);
+      out += css.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
+    if (char === '/' && css[index + 1] === '*') {
+      const close = css.indexOf('*/', index + 2);
+      index = close === -1 ? css.length : close + 2;
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return out;
 }
 
 function countLiterals(css: string): ComponentManifestLiteralInventory {
