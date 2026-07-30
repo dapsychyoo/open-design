@@ -302,10 +302,11 @@ const TRAVERSABLE_GROUP_AT_RULES = /^@(?:media|supports|container|layer|scope|st
  * nested-block bodies) are attributed to its resolved selector list — including
  * rules that follow another rule or a `:root` block, and rules using CSS
  * nesting (`&:hover { ... }`, nested grouping at-rules such as `@media` or
- * `@starting-style`). Braces inside quoted strings (`content: '{'`, data URLs)
- * are text, not structure. At-rules whose bodies do not describe the current
- * selector tree (`@keyframes`, `@font-face`, ...) and `:root` rules are
- * skipped.
+ * `@starting-style`). Braces and quotes inside quoted strings (`content: '{'`),
+ * behind CSS escapes (`.content-\[\'x\'\]`), or inside function values
+ * (unquoted `url(...)` data URIs) are text, not structure. At-rules whose
+ * bodies do not describe the current selector tree (`@keyframes`,
+ * `@font-face`, ...) and `:root` rules are skipped.
  */
 function collectCssRules(css: string): CssRule[] {
   const rules: CssRule[] = [];
@@ -317,16 +318,22 @@ function walkCssBlock(body: string, selfSelectors: string[], out: CssRule[]): vo
   let declarations = '';
   let segment = '';
   let index = 0;
+  let parenDepth = 0;
 
   while (index < body.length) {
     const char = body[index];
+    if (char === '\\') {
+      segment += body.slice(index, index + 2);
+      index += 2;
+      continue;
+    }
     if (char === '"' || char === "'") {
       const end = findStringEnd(body, index);
       segment += body.slice(index, end + 1);
       index = end + 1;
       continue;
     }
-    if (char === '{') {
+    if (char === '{' && parenDepth === 0) {
       const close = findMatchingBrace(body, index);
       const { leadingDeclarations, prelude } = splitBlockPrelude(segment);
       declarations += leadingDeclarations;
@@ -335,12 +342,14 @@ function walkCssBlock(body: string, selfSelectors: string[], out: CssRule[]): vo
       index = close + 1;
       continue;
     }
-    if (char === '}') {
+    if (char === '}' && parenDepth === 0) {
       declarations += segment;
       segment = '';
       index += 1;
       continue;
     }
+    if (char === '(') parenDepth += 1;
+    else if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
     segment += char;
     index += 1;
   }
@@ -372,10 +381,43 @@ function enterCssBlock(prelude: string, body: string, parentSelectors: string[],
 function resolveNestedSelectors(selectors: string[], parentSelectors: string[]): string[] {
   if (parentSelectors.length === 0) return selectors;
   return parentSelectors.flatMap((parent) =>
-    selectors.map((selector) =>
-      selector.includes('&') ? selector.replaceAll('&', parent) : `${parent} ${selector}`,
-    ),
+    selectors.map((selector) => expandNestingSelector(selector, parent) ?? `${parent} ${selector}`),
   );
+}
+
+/**
+ * Expands every nesting-selector `&` into `parent`. Only an unescaped `&`
+ * outside quoted strings is a nesting selector; `&` inside attribute-value
+ * strings (`[data-label="A&B"]`) or escaped as `\&` stays literal. Returns
+ * null when the selector contains no nesting selector.
+ */
+function expandNestingSelector(selector: string, parent: string): string | null {
+  let out = '';
+  let found = false;
+  let index = 0;
+  while (index < selector.length) {
+    const char = selector[index];
+    if (char === '\\') {
+      out += selector.slice(index, index + 2);
+      index += 2;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const end = findStringEnd(selector, index);
+      out += selector.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
+    if (char === '&') {
+      out += parent;
+      found = true;
+      index += 1;
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return found ? out : null;
 }
 
 function splitBlockPrelude(segment: string): { leadingDeclarations: string; prelude: string } {
@@ -395,17 +437,26 @@ function splitBlockPrelude(segment: string): { leadingDeclarations: string; prel
 
 function findMatchingBrace(source: string, openIndex: number): number {
   let depth = 0;
+  let parenDepth = 0;
   let index = openIndex;
   while (index < source.length) {
     const char = source[index];
+    if (char === '\\') {
+      index += 2;
+      continue;
+    }
     if (char === '"' || char === "'") {
       index = findStringEnd(source, index) + 1;
       continue;
     }
-    if (char === '{') depth += 1;
-    else if (char === '}') {
-      depth -= 1;
-      if (depth === 0) return index;
+    if (char === '(') parenDepth += 1;
+    else if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
+    else if (parenDepth === 0) {
+      if (char === '{') depth += 1;
+      else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) return index;
+      }
     }
     index += 1;
   }
@@ -515,6 +566,11 @@ function stripCssComments(css: string): string {
   let index = 0;
   while (index < css.length) {
     const char = css[index];
+    if (char === '\\') {
+      out += css.slice(index, index + 2);
+      index += 2;
+      continue;
+    }
     if (char === '"' || char === "'") {
       const end = findStringEnd(css, index);
       out += css.slice(index, end + 1);

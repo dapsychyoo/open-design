@@ -204,6 +204,57 @@ describe('components manifest extraction', () => {
     expect(badges?.tokenReferences).toEqual(['--accent']);
   });
 
+  it('honors CSS escapes so escaped quotes and braces are text, not structure', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --card-bg: #fff; }
+          .content-\\[\\'x\\'\\]::before { color: var(--accent); }
+          .card { background: var(--card-bg); }
+          .badge-\\{x\\} { color: var(--accent); }
+          .chip { background-image: url(data:image/svg+xml,<svg>{}</svg>); color: var(--accent); }
+          .tag { color: var(--accent); }
+        </style>
+        <button class="btn">x</button>
+      `,
+    });
+
+    expect(manifest.selectors).toEqual([
+      ".badge-\\{x\\}",
+      '.card',
+      '.chip',
+      ".content-\\[\\'x\\'\\]::before",
+      '.tag',
+    ]);
+
+    const cards = manifest.groups.find((group) => group.id === 'cards');
+    expect(cards?.tokenReferences).toEqual(['--card-bg']);
+
+    const badges = manifest.groups.find((group) => group.id === 'badges');
+    expect(badges?.selectors).toEqual([".badge-\\{x\\}", '.chip', '.tag']);
+    expect(badges?.tokenReferences).toEqual(['--accent']);
+  });
+
+  it('expands & only as the nesting selector, never inside quoted attribute values', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; }
+          .btn { &[data-label="A&B"] { color: var(--accent); } }
+        </style>
+        <button class="btn" data-label="A&amp;B">x</button>
+      `,
+    });
+
+    expect(manifest.selectors).toEqual(['.btn', '.btn[data-label="A&B"]']);
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.selectors).toEqual(['.btn', '.btn[data-label="A&B"]']);
+    expect(buttons?.tokenReferences).toEqual(['--accent']);
+  });
+
   it('can render a concise prompt summary from a manifest', () => {
     const manifest = extractComponentsManifest({
       brandId: 'sample',
