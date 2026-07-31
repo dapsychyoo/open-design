@@ -1787,7 +1787,11 @@ export function composeChatUserRequestForAgent(
   const transition = formAnswerTransitionForCurrentPrompt(currentPrompt);
   if (!transition) return body;
   if (skip) {
-    return [transition, body].join('\n\n');
+    // The transition block already embeds the trimmed `currentPrompt`
+    // (the submitted form answers). On the resume path `body` IS
+    // `currentPrompt`, so appending it would ship the answers twice
+    // (issue #6239); the transition alone carries the whole turn.
+    return transition;
   }
   return [
     transition,
