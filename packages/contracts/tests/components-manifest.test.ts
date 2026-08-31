@@ -258,6 +258,26 @@ describe('components manifest extraction', () => {
     expect(badges?.tokenReferences).toEqual(['--base', '--hover']);
   });
 
+  it('keeps balanced brace blocks in custom-property values as declaration text', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226-custom-prop-blocks',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --inside: #f0f; }
+          .btn { --payload: { color: var(--inside); }; color: var(--accent); }
+          .card { background: #fff; }
+        </style>
+        <button class="btn">x</button>
+      `,
+    });
+
+    expect(manifest.selectors).toEqual(['.btn', '.card']);
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.selectors).toEqual(['.btn']);
+    expect(buttons?.tokenReferences).toEqual(['--accent', '--inside']);
+  });
+
   it('traverses @scope and @starting-style blocks like other grouping at-rules', () => {
     const manifest = extractComponentsManifest({
       brandId: 'pr-6226',

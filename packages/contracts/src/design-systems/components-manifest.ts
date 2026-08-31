@@ -499,15 +499,24 @@ type CssRule = {
 const TRAVERSABLE_GROUP_AT_RULES = /^@(?:media|supports|container|layer|scope|starting-style)\b/i;
 
 /**
+ * A block prelude that is actually an in-progress custom-property declaration.
+ * Custom properties accept the permissive `<declaration-value>` grammar, which
+ * includes balanced brace blocks (CSS Variables §2.1), so a `{` after
+ * `--name:` opens value text, not a nested rule.
+ */
+const CUSTOM_PROPERTY_DECLARATION_PRELUDE = /^--[-\w\u0080-\uffff]*\s*:/;
+
+/**
  * Brace-depth CSS scanner. Invariant: every rule's own declarations (excluding
  * nested-block bodies) are attributed to its resolved selector list — including
  * rules that follow another rule or a `:root` block, and rules using CSS
  * nesting (`&:hover { ... }`, nested grouping at-rules such as `@media` or
  * `@starting-style`). Braces and quotes inside quoted strings (`content: '{'`),
  * behind CSS escapes (`.content-\[\'x\'\]`), or inside function values
- * (unquoted `url(...)` data URIs) are text, not structure. At-rules whose
- * bodies do not describe the current selector tree (`@keyframes`,
- * `@font-face`, ...) and `:root` rules are skipped.
+ * (unquoted `url(...)` data URIs) are text, not structure, and so are
+ * balanced brace blocks inside custom-property values (`--payload: { ... };`).
+ * At-rules whose bodies do not describe the current selector tree
+ * (`@keyframes`, `@font-face`, ...) and `:root` rules are skipped.
  */
 function collectCssRules(css: string): CssRule[] {
   const rules: CssRule[] = [];
@@ -537,6 +546,11 @@ function walkCssBlock(body: string, selfSelectors: string[], out: CssRule[]): vo
     if (char === '{' && parenDepth === 0) {
       const close = findMatchingBrace(body, index);
       const { leadingDeclarations, prelude } = splitBlockPrelude(segment);
+      if (CUSTOM_PROPERTY_DECLARATION_PRELUDE.test(prelude.trim())) {
+        segment += body.slice(index, close + 1);
+        index = close + 1;
+        continue;
+      }
       declarations += leadingDeclarations;
       enterCssBlock(prelude.trim(), body.slice(index + 1, close), selfSelectors, out);
       segment = '';
