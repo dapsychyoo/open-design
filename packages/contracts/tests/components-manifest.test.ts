@@ -143,6 +143,29 @@ describe('components manifest extraction', () => {
     expect(inputs?.tokenReferences).toEqual(['--accent']);
   });
 
+  it('matches form-control names only where a type selector can occur', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226-form-controls',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --muted: #889; }
+          form > input { color: var(--accent); }
+          :is(select) { color: var(--accent); }
+          .field-row:has(select) { color: var(--accent); }
+          .transition-input { transition: color 120ms; color: var(--muted); }
+          [data-kind="label"] { color: var(--muted); }
+          x-widget::part(select) { color: var(--muted); }
+          ::-webkit-input-placeholder { color: var(--muted); }
+        </style>
+        <div class="field-row transition-input" data-kind="label">x</div>
+      `,
+    });
+
+    const inputs = manifest.groups.find((group) => group.id === 'inputs');
+    expect(inputs?.selectors).toEqual([':is(select)', '.field-row:has(select)', 'form > input']);
+    expect(inputs?.tokenReferences).toEqual(['--accent']);
+  });
+
   it('traverses @scope and @starting-style blocks like other grouping at-rules', () => {
     const manifest = extractComponentsManifest({
       brandId: 'pr-6226',

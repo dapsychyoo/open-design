@@ -349,8 +349,7 @@
         ".field select:focus-visible",
         ".field textarea",
         ".field textarea:focus-visible",
-        ".field-help",
-        ".metric-label"
+        ".field-help"
       ],
       "classes": [
         "field",

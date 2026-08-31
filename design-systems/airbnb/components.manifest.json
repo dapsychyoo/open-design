@@ -405,8 +405,6 @@
       "label": "Form fields and controls",
       "present": true,
       "selectors": [
-        ".award-label",
-        ".booking-cell-label",
         ".field",
         ".field input",
         ".field input::placeholder",
@@ -416,8 +414,7 @@
         ".field select:focus-visible",
         ".field-error .field-help",
         ".field-error input",
-        ".field-help",
-        ".search-segment-label"
+        ".field-help"
       ],
       "classes": [
         "field",
@@ -438,7 +435,6 @@
         "--fg",
         "--fg-2",
         "--focus-ring",
-        "--font-display",
         "--motion-fast",
         "--muted",
         "--radius-sm",

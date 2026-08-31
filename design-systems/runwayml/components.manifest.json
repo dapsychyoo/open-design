@@ -318,9 +318,7 @@
         ".field input::placeholder",
         ".field input:focus-visible",
         ".field label",
-        ".field-help",
-        ".hero-frame-caption .label",
-        ".label"
+        ".field-help"
       ],
       "classes": [
         "field",

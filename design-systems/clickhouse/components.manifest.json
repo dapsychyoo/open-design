@@ -330,8 +330,7 @@
         ".field input::placeholder",
         ".field input:focus-visible",
         ".field label",
-        ".field-help",
-        ".stat-label"
+        ".field-help"
       ],
       "classes": [
         "field",
@@ -357,7 +356,6 @@
         "--muted",
         "--radius-sm",
         "--space-2",
-        "--space-3",
         "--surface",
         "--text-sm",
         "--text-xs"

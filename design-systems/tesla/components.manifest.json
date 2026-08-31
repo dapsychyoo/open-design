@@ -325,8 +325,7 @@
         ".field input:focus-visible",
         ".field input:hover",
         ".field label",
-        ".field-help",
-        ".hero-canvas-label"
+        ".field-help"
       ],
       "classes": [
         "field",
@@ -353,7 +352,6 @@
         "--muted",
         "--radius-sm",
         "--space-2",
-        "--space-4",
         "--text-base",
         "--text-sm"
       ]

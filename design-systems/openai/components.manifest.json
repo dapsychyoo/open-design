@@ -276,8 +276,7 @@
         ".field input",
         ".field input::placeholder",
         ".field input:focus",
-        ".field label",
-        ".label"
+        ".field label"
       ],
       "classes": [
         "field"
@@ -297,12 +296,10 @@
         "--font-body",
         "--meta",
         "--motion-fast",
-        "--muted",
         "--radius-sm",
         "--space-2",
         "--text-base",
-        "--text-sm",
-        "--text-xs"
+        "--text-sm"
       ]
     },
     {

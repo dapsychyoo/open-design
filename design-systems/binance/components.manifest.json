@@ -334,8 +334,7 @@
         ".field input::placeholder",
         ".field input:focus-visible",
         ".field label",
-        ".field-help",
-        ".stat-label"
+        ".field-help"
       ],
       "classes": [
         "field",

@@ -366,8 +366,7 @@
         ".field textarea",
         ".field textarea::placeholder",
         ".field textarea:focus",
-        ".field-help",
-        ".hero-meta-stat-label"
+        ".field-help"
       ],
       "classes": [
         "field",

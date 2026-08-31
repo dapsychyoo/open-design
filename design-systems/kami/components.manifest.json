@@ -316,17 +316,11 @@
     {
       "id": "inputs",
       "label": "Form fields and controls",
-      "present": true,
-      "selectors": [
-        ".metric-label"
-      ],
+      "present": false,
+      "selectors": [],
       "classes": [],
       "elements": [],
-      "tokenReferences": [
-        "--font-display",
-        "--muted",
-        "--text-sm"
-      ]
+      "tokenReferences": []
     },
     {
       "id": "cards",

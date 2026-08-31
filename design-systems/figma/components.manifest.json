@@ -246,16 +246,11 @@
     {
       "id": "inputs",
       "label": "Form fields and controls",
-      "present": true,
-      "selectors": [
-        ".mono-label"
-      ],
+      "present": false,
+      "selectors": [],
       "classes": [],
       "elements": [],
-      "tokenReferences": [
-        "--fg",
-        "--font-mono"
-      ]
+      "tokenReferences": []
     },
     {
       "id": "cards",

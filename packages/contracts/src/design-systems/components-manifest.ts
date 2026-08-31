@@ -67,6 +67,13 @@ type ComponentGroupDefinition = {
   id: ComponentManifestGroupId;
   label: string;
   selectorMatchers: RegExp[];
+  /**
+   * Element names matched only where CSS grammar allows a type selector.
+   * Unlike `selectorMatchers`, these never match inside class/ID names,
+   * attribute selectors, or pseudo-element names/arguments — see
+   * `selectorContainsTypeSelector`.
+   */
+  typeSelectorNames?: string[];
   classMatchers: RegExp[];
   elementMatchers: RegExp[];
 };
@@ -82,7 +89,8 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
   {
     id: 'inputs',
     label: 'Form fields and controls',
-    selectorMatchers: [/\binput\b/i, /\btextarea\b/i, /(?:^|[\s>+~,(])select(?:$|[\s>+~,.:#[)])/i, /\.field(?:\b|[-_:])/i, /\blabel\b/i],
+    selectorMatchers: [/\.field(?:\b|[-_:])/i],
+    typeSelectorNames: ['input', 'textarea', 'select', 'label'],
     classMatchers: [/^field(?:$|-)/i, /^input(?:$|-)/i, /^control(?:$|-)/i, /^form(?:$|-)/i],
     elementMatchers: [/^(input|textarea|select|label|form)$/i],
   },
@@ -213,6 +221,118 @@ export function summarizeComponentsManifestForPrompt(manifest: ComponentsManifes
   ].join('\n');
 }
 
+/**
+ * Invariant: a form-control name counts as present in a selector only where
+ * CSS grammar allows a type selector to occur. Class and ID names, attribute
+ * selectors, and pseudo-class/pseudo-element names never contribute matches,
+ * and neither do pseudo-element arguments that name parts rather than
+ * elements (e.g. `::part(select)`). Arguments of functional pseudo-classes
+ * (`:is()`, `:has()`, `:not()`, `:where()`) and of `::slotted()` are real
+ * selectors, so names inside them stay matchable.
+ */
+function selectorContainsTypeSelector(selector: string, name: string): boolean {
+  const masked = maskNonTypeSelectorText(selector);
+  const boundary = new RegExp(`(?:^|[\\s>+~,(])${name}(?:$|[\\s>+~,.:#[)])`, 'i');
+  return boundary.test(masked);
+}
+
+const SELECTOR_IDENT_CHAR = /[-\w\u0080-\uffff]/;
+
+/**
+ * Blanks out every part of a selector where a type selector cannot occur —
+ * class/ID names, attribute blocks, pseudo names, and name-valued
+ * pseudo-element arguments — replacing them with spaces so the surviving
+ * text can be matched for element names with plain boundary checks.
+ * Quotes and CSS escapes inside attribute blocks are honored so a bracket
+ * or quote inside a string never ends the block early.
+ */
+function maskNonTypeSelectorText(selector: string): string {
+  let out = '';
+  let index = 0;
+
+  const maskIdentifier = (): void => {
+    while (index < selector.length) {
+      const char = selector.charAt(index);
+      if (char === '\\') {
+        out += '  ';
+        index += 2;
+        continue;
+      }
+      if (!SELECTOR_IDENT_CHAR.test(char)) break;
+      out += ' ';
+      index += 1;
+    }
+  };
+
+  const maskDelimitedBlock = (open: string, close: string): void => {
+    let depth = 0;
+    while (index < selector.length) {
+      const char = selector.charAt(index);
+      if (char === '\\') {
+        out += '  ';
+        index += 2;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        out += ' ';
+        index += 1;
+        while (index < selector.length) {
+          const quoted = selector.charAt(index);
+          if (quoted === '\\') {
+            out += '  ';
+            index += 2;
+            continue;
+          }
+          out += ' ';
+          index += 1;
+          if (quoted === char) break;
+        }
+        continue;
+      }
+      if (char === open) depth += 1;
+      if (char === close) depth -= 1;
+      out += ' ';
+      index += 1;
+      if (depth === 0) break;
+    }
+  };
+
+  while (index < selector.length) {
+    const char = selector.charAt(index);
+    if (char === '\\') {
+      out += '  ';
+      index += 2;
+      continue;
+    }
+    if (char === '.' || char === '#') {
+      out += ' ';
+      index += 1;
+      maskIdentifier();
+      continue;
+    }
+    if (char === '[') {
+      maskDelimitedBlock('[', ']');
+      continue;
+    }
+    if (char === ':') {
+      const isPseudoElement = selector.charAt(index + 1) === ':';
+      out += isPseudoElement ? '  ' : ' ';
+      index += isPseudoElement ? 2 : 1;
+      const nameStart = index;
+      maskIdentifier();
+      const pseudoName = selector.slice(nameStart, index).toLowerCase();
+      if (selector.charAt(index) === '(' && isPseudoElement && pseudoName !== 'slotted') {
+        maskDelimitedBlock('(', ')');
+      }
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+
+  return out;
+}
+
 function buildGroupManifest(
   definition: ComponentGroupDefinition,
   inventory: {
@@ -223,8 +343,10 @@ function buildGroupManifest(
     referencedTokens: string[];
   },
 ): ComponentManifestGroup {
-  const selectors = inventory.selectors.filter((selector) =>
-    definition.selectorMatchers.some((matcher) => matcher.test(selector)),
+  const selectors = inventory.selectors.filter(
+    (selector) =>
+      definition.selectorMatchers.some((matcher) => matcher.test(selector)) ||
+      (definition.typeSelectorNames ?? []).some((name) => selectorContainsTypeSelector(selector, name)),
   );
   const classes = inventory.classes.filter((className) =>
     definition.classMatchers.some((matcher) => matcher.test(className)),

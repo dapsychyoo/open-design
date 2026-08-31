@@ -322,8 +322,7 @@
         ".field input:focus-visible",
         ".field input:hover",
         ".field label",
-        ".field-help",
-        ".messenger-input"
+        ".field-help"
       ],
       "classes": [
         "field",

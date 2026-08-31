@@ -327,8 +327,7 @@
         ".field input:focus-visible",
         ".field input:hover",
         ".field label",
-        ".field-help",
-        ".metric-label"
+        ".field-help"
       ],
       "classes": [
         "field",
@@ -346,7 +345,6 @@
         "--border",
         "--ease-standard",
         "--fg",
-        "--fg-2",
         "--focus-ring",
         "--meta",
         "--motion-fast",
@@ -354,7 +352,6 @@
         "--radius-sm",
         "--space-2",
         "--surface",
-        "--text-base",
         "--text-sm",
         "--text-xs"
       ]
