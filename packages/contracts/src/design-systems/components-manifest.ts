@@ -499,12 +499,28 @@ type CssRule = {
 const TRAVERSABLE_GROUP_AT_RULES = /^@(?:media|supports|container|layer|scope|starting-style)\b/i;
 
 /**
- * A block prelude that is actually an in-progress custom-property declaration.
- * Custom properties accept the permissive `<declaration-value>` grammar, which
- * includes balanced brace blocks (CSS Variables §2.1), so a `{` after
- * `--name:` opens value text, not a nested rule.
+ * True when a block prelude is an in-progress custom-property declaration
+ * (`--<ident>` through its colon). Custom properties accept the permissive
+ * `<declaration-value>` grammar, which includes balanced brace blocks
+ * (CSS Variables §2.1), so a `{` after `--name:` opens value text, not a
+ * nested rule. Property names use the `<ident-token>` grammar, so CSS
+ * escapes inside the name are consumed in full via `cssEscapeEndIndex`.
  */
-const CUSTOM_PROPERTY_DECLARATION_PRELUDE = /^--[-\w\u0080-\uffff]*\s*:/;
+function isCustomPropertyDeclarationPrelude(prelude: string): boolean {
+  if (!prelude.startsWith('--')) return false;
+  let index = 2;
+  while (index < prelude.length) {
+    const char = prelude.charAt(index);
+    if (char === '\\') {
+      index = cssEscapeEndIndex(prelude, index);
+      continue;
+    }
+    if (!SELECTOR_IDENT_CHAR.test(char)) break;
+    index += 1;
+  }
+  while (index < prelude.length && /\s/.test(prelude.charAt(index))) index += 1;
+  return prelude.charAt(index) === ':';
+}
 
 /**
  * Brace-depth CSS scanner. Invariant: every rule's own declarations (excluding
@@ -546,7 +562,7 @@ function walkCssBlock(body: string, selfSelectors: string[], out: CssRule[]): vo
     if (char === '{' && parenDepth === 0) {
       const close = findMatchingBrace(body, index);
       const { leadingDeclarations, prelude } = splitBlockPrelude(segment);
-      if (CUSTOM_PROPERTY_DECLARATION_PRELUDE.test(prelude.trim())) {
+      if (isCustomPropertyDeclarationPrelude(prelude.trim())) {
         segment += body.slice(index, close + 1);
         index = close + 1;
         continue;

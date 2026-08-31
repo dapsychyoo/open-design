@@ -264,7 +264,7 @@ describe('components manifest extraction', () => {
       fixtureHtml: `
         <style>
           :root { --accent: #05f; --inside: #f0f; }
-          .btn { --payload: { color: var(--inside); }; color: var(--accent); }
+          .btn { --payload: { color: var(--inside); }; --pay\\6c oad-b: { color: var(--extra); }; color: var(--accent); }
           .card { background: #fff; }
         </style>
         <button class="btn">x</button>
@@ -275,7 +275,7 @@ describe('components manifest extraction', () => {
 
     const buttons = manifest.groups.find((group) => group.id === 'buttons');
     expect(buttons?.selectors).toEqual(['.btn']);
-    expect(buttons?.tokenReferences).toEqual(['--accent', '--inside']);
+    expect(buttons?.tokenReferences).toEqual(['--accent', '--extra', '--inside']);
   });
 
   it('traverses @scope and @starting-style blocks like other grouping at-rules', () => {
