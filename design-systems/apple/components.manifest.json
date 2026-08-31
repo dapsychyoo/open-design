@@ -529,12 +529,6 @@
       "present": true,
       "selectors": [
         ".container",
-        ".nav",
-        ".nav-brand",
-        ".nav-inner",
-        ".nav-links",
-        ".nav-links a",
-        ".nav-links a:hover",
         ".row-between",
         ".stack-3 > * + *",
         ".stack-4 > * + *",
@@ -554,24 +548,16 @@
         "section"
       ],
       "tokenReferences": [
-        "--bg",
-        "--border-soft",
         "--container-gutter-desktop",
         "--container-gutter-phone",
         "--container-gutter-tablet",
         "--container-max",
-        "--ease-standard",
-        "--fg",
-        "--font-display",
-        "--motion-fast",
         "--section-y-desktop",
         "--section-y-phone",
         "--section-y-tablet",
         "--space-3",
         "--space-4",
-        "--space-6",
-        "--text-base",
-        "--text-sm"
+        "--space-6"
       ]
     }
   ],

@@ -528,15 +528,6 @@
       "present": true,
       "selectors": [
         ".container",
-        ".nav-cluster",
-        ".nav-logo",
-        ".nav-logo svg",
-        ".nav-row",
-        ".nav-search",
-        ".nav-search input",
-        ".nav-search input::placeholder",
-        ".nav-search svg",
-        ".nav-search:focus-within",
         ".stack-2 > * + *",
         ".stack-3 > * + *",
         ".stack-4 > * + *",
@@ -555,29 +546,18 @@
         "section"
       ],
       "tokenReferences": [
-        "--accent",
         "--border-soft",
         "--container-gutter-desktop",
         "--container-gutter-phone",
         "--container-gutter-tablet",
         "--container-max",
-        "--ease-standard",
-        "--fg",
-        "--focus-ring",
-        "--font-display",
-        "--motion-fast",
-        "--muted",
-        "--radius-pill",
         "--section-y-desktop",
         "--section-y-phone",
         "--section-y-tablet",
         "--space-2",
         "--space-3",
         "--space-4",
-        "--space-6",
-        "--surface",
-        "--text-lg",
-        "--tracking-display"
+        "--space-6"
       ]
     }
   ],

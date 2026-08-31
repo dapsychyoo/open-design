@@ -82,7 +82,8 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
   {
     id: 'buttons',
     label: 'Buttons and calls to action',
-    selectorMatchers: [/\bbutton\b/i, /\.btn(?:\b|[-_:])/i, /\[type=["']?(?:button|submit|reset)/i],
+    selectorMatchers: [/\.btn(?:\b|[-_:])/i, /\[type=["']?(?:button|submit|reset)/i],
+    typeSelectorNames: ['button'],
     classMatchers: [/^btn(?:$|-)/i, /^button(?:$|-)/i, /^cta(?:$|-)/i],
     elementMatchers: [/^button$/i],
   },
@@ -111,14 +112,16 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
   {
     id: 'links',
     label: 'Links and inline actions',
-    selectorMatchers: [/\ba\b/i, /\.link(?:\b|[-_:])/i],
+    selectorMatchers: [/\.link(?:\b|[-_:])/i],
+    typeSelectorNames: ['a'],
     classMatchers: [/^link(?:$|-)/i],
     elementMatchers: [/^a$/i],
   },
   {
     id: 'keyboard',
     label: 'Keyboard hints',
-    selectorMatchers: [/\bkbd\b/i, /\.kbd(?:\b|[-_:])/i],
+    selectorMatchers: [/\.kbd(?:\b|[-_:])/i],
+    typeSelectorNames: ['kbd'],
     classMatchers: [/^kbd(?:$|-)/i, /^keyboard(?:$|-)/i, /^shortcut(?:$|-)/i],
     elementMatchers: [/^kbd$/i],
   },
@@ -132,21 +135,16 @@ const COMPONENT_GROUPS: ComponentGroupDefinition[] = [
   {
     id: 'typography',
     label: 'Typography scale and text utilities',
-    selectorMatchers: [/\bh[1-6]\b/i, /\.lead(?:\b|[-_:])/i, /\.eyebrow(?:\b|[-_:])/i, /\.body-(?:muted|sm|small)\b/i],
+    selectorMatchers: [/\.lead(?:\b|[-_:])/i, /\.eyebrow(?:\b|[-_:])/i, /\.body-(?:muted|sm|small)\b/i],
+    typeSelectorNames: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
     classMatchers: [/^lead$/i, /^eyebrow$/i, /^body-(?:muted|sm|small)$/i, /^caption(?:$|-)/i],
     elementMatchers: [/^h[1-6]$/i, /^p$/i],
   },
   {
     id: 'layout',
     label: 'Layout primitives',
-    selectorMatchers: [
-      /\.container(?:\b|[-_:])/i,
-      /\.stack-\d+\b/i,
-      /\.row-(?:between|center|start|end)\b/i,
-      /\bsection\b/i,
-      /\bmain\b/i,
-      /\bnav\b/i,
-    ],
+    selectorMatchers: [/\.container(?:\b|[-_:])/i, /\.stack-\d+\b/i, /\.row-(?:between|center|start|end)\b/i],
+    typeSelectorNames: ['section', 'main', 'nav'],
     classMatchers: [/^container$/i, /^stack-\d+$/i, /^row-(?:between|center|start|end)$/i, /^grid$/i, /^layout(?:$|-)/i],
     elementMatchers: [/^(main|section|nav|header|footer)$/i],
   },
@@ -222,13 +220,14 @@ export function summarizeComponentsManifestForPrompt(manifest: ComponentsManifes
 }
 
 /**
- * Invariant: a form-control name counts as present in a selector only where
- * CSS grammar allows a type selector to occur. Class and ID names, attribute
+ * Invariant: an element name counts as present in a selector only where CSS
+ * grammar allows a type selector to occur. Class and ID names, attribute
  * selectors, and pseudo-class/pseudo-element names never contribute matches,
- * and neither do pseudo-element arguments that name parts rather than
- * elements (e.g. `::part(select)`). Arguments of functional pseudo-classes
- * (`:is()`, `:has()`, `:not()`, `:where()`) and of `::slotted()` are real
- * selectors, so names inside them stay matchable.
+ * and neither do functional pseudo arguments whose grammar carries values
+ * rather than selectors (e.g. `::part(select)`, `:lang(select)`,
+ * `:state(label)`). Only selector-bearing argument positions stay matchable:
+ * the pseudo-classes in `SELECTOR_BEARING_PSEUDO_CLASSES`, the selector after
+ * `of` in `:nth-child()`/`:nth-last-child()`, and `::slotted()`.
  */
 function selectorContainsTypeSelector(selector: string, name: string): boolean {
   const masked = maskNonTypeSelectorText(selector);
@@ -237,6 +236,9 @@ function selectorContainsTypeSelector(selector: string, name: string): boolean {
 }
 
 const SELECTOR_IDENT_CHAR = /[-\w\u0080-\uffff]/;
+
+/** Functional pseudo-classes whose arguments are themselves selectors. */
+const SELECTOR_BEARING_PSEUDO_CLASSES = new Set(['is', 'where', 'not', 'has', 'host', 'host-context']);
 
 /**
  * Blanks out every part of a selector where a type selector cannot occur —
@@ -297,6 +299,33 @@ function maskNonTypeSelectorText(selector: string): string {
     }
   };
 
+  // An+B text before the `of` keyword is a value, not a selector; the part
+  // after `of` (and the closing paren) returns to the normal selector walk.
+  const maskNthArgsUpToOfKeyword = (): void => {
+    out += ' ';
+    index += 1;
+    while (index < selector.length) {
+      const char = selector.charAt(index);
+      if (char === ')') {
+        out += ' ';
+        index += 1;
+        return;
+      }
+      if (
+        (char === 'o' || char === 'O') &&
+        /f/i.test(selector.charAt(index + 1)) &&
+        !SELECTOR_IDENT_CHAR.test(selector.charAt(index - 1)) &&
+        !SELECTOR_IDENT_CHAR.test(selector.charAt(index + 2))
+      ) {
+        out += '  ';
+        index += 2;
+        return;
+      }
+      out += ' ';
+      index += 1;
+    }
+  };
+
   while (index < selector.length) {
     const char = selector.charAt(index);
     if (char === '\\') {
@@ -321,8 +350,17 @@ function maskNonTypeSelectorText(selector: string): string {
       const nameStart = index;
       maskIdentifier();
       const pseudoName = selector.slice(nameStart, index).toLowerCase();
-      if (selector.charAt(index) === '(' && isPseudoElement && pseudoName !== 'slotted') {
-        maskDelimitedBlock('(', ')');
+      if (selector.charAt(index) === '(') {
+        const argsAreSelectors = isPseudoElement
+          ? pseudoName === 'slotted'
+          : SELECTOR_BEARING_PSEUDO_CLASSES.has(pseudoName);
+        if (!argsAreSelectors) {
+          if (!isPseudoElement && pseudoName.startsWith('nth-')) {
+            maskNthArgsUpToOfKeyword();
+          } else {
+            maskDelimitedBlock('(', ')');
+          }
+        }
       }
       continue;
     }

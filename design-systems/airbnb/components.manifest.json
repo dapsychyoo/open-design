@@ -586,8 +586,6 @@
       "present": true,
       "selectors": [
         ".container",
-        ".nav-logo",
-        ".nav-row",
         ".row-between",
         ".stack-2 > * + *",
         ".stack-3 > * + *",
@@ -608,22 +606,18 @@
         "section"
       ],
       "tokenReferences": [
-        "--accent",
         "--border",
         "--container-gutter-desktop",
         "--container-gutter-phone",
         "--container-gutter-tablet",
         "--container-max",
-        "--font-display",
         "--section-y-desktop",
         "--section-y-phone",
         "--section-y-tablet",
         "--space-2",
         "--space-3",
         "--space-4",
-        "--space-6",
-        "--text-lg",
-        "--tracking-display"
+        "--space-6"
       ]
     }
   ],

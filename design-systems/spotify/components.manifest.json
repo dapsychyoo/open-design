@@ -364,9 +364,6 @@
       "present": true,
       "selectors": [
         ".container",
-        ".nav-pill",
-        ".nav-pill:hover",
-        ".nav-pill.active",
         ".stack-3 > * + *",
         ".stack-4 > * + *",
         "section",
@@ -387,17 +384,11 @@
         "--container-gutter-phone",
         "--container-gutter-tablet",
         "--container-max",
-        "--ease-standard",
-        "--fg",
-        "--motion-fast",
-        "--radius-sm",
         "--section-y-desktop",
         "--section-y-phone",
         "--section-y-tablet",
         "--space-3",
-        "--space-4",
-        "--surface",
-        "--surface-warm"
+        "--space-4"
       ]
     }
   ],

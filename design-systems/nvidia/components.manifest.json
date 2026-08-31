@@ -473,12 +473,6 @@
       "selectors": [
         ".container",
         ".row-between",
-        ".section-light",
-        ".section-light .btn-primary",
-        ".section-light .btn-primary:hover",
-        ".section-light .card",
-        ".section-light .eyebrow",
-        ".section-light p",
         ".stack-3 > * + *",
         ".stack-4 > * + *",
         ".stack-6 > * + *",
@@ -496,8 +490,6 @@
         "section"
       ],
       "tokenReferences": [
-        "--accent",
-        "--accent-hover",
         "--border-soft",
         "--container-gutter-desktop",
         "--container-gutter-phone",

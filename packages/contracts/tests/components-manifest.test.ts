@@ -166,6 +166,52 @@ describe('components manifest extraction', () => {
     expect(inputs?.tokenReferences).toEqual(['--accent']);
   });
 
+  it('matches group element names only where a type selector can occur', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226-element-groups',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --muted: #889; }
+          button { color: var(--accent); }
+          section > main { color: var(--accent); }
+          .transition-button { transition: transform 120ms; color: var(--muted); }
+          .foo-section-bar { color: var(--muted); }
+          .nav-link { color: var(--muted); }
+          [data-kind="button"] { color: var(--muted); }
+        </style>
+        <button class="transition-button">x</button>
+      `,
+    });
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.selectors).toEqual(['button']);
+    expect(buttons?.tokenReferences).toEqual(['--accent']);
+
+    const layout = manifest.groups.find((group) => group.id === 'layout');
+    expect(layout?.selectors).toEqual(['section > main']);
+    expect(layout?.tokenReferences).toEqual(['--accent']);
+  });
+
+  it('masks value-typed pseudo-class arguments but keeps selector-bearing ones matchable', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226-pseudo-args',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --muted: #889; }
+          li:nth-child(2 of input) { color: var(--accent); }
+          :host(select) { color: var(--accent); }
+          .copy:lang(select) { color: var(--muted); }
+          :state(label) { color: var(--muted); }
+        </style>
+        <input class="copy" />
+      `,
+    });
+
+    const inputs = manifest.groups.find((group) => group.id === 'inputs');
+    expect(inputs?.selectors).toEqual([':host(select)', 'li:nth-child(2 of input)']);
+    expect(inputs?.tokenReferences).toEqual(['--accent']);
+  });
+
   it('traverses @scope and @starting-style blocks like other grouping at-rules', () => {
     const manifest = extractComponentsManifest({
       brandId: 'pr-6226',

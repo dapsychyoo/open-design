@@ -494,12 +494,6 @@
       "present": true,
       "selectors": [
         ".container",
-        ".nav",
-        ".nav-brand",
-        ".nav-inner",
-        ".nav-links",
-        ".nav-links a",
-        ".nav-links a:hover",
         ".row-between",
         ".stack-3 > * + *",
         ".stack-4 > * + *",
@@ -525,22 +519,13 @@
         "--container-gutter-phone",
         "--container-gutter-tablet",
         "--container-max",
-        "--ease-standard",
-        "--fg",
-        "--font-display",
-        "--motion-base",
-        "--radius-sm",
         "--section-y-desktop",
         "--section-y-phone",
         "--section-y-tablet",
-        "--space-1",
-        "--space-2",
         "--space-3",
         "--space-4",
         "--space-6",
-        "--space-8",
-        "--surface",
-        "--text-base"
+        "--space-8"
       ]
     }
   ],

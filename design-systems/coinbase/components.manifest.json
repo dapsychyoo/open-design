@@ -524,14 +524,7 @@
       "selectors": [
         ".container",
         ".row-between",
-        ".section-dark",
-        ".section-dark .body-muted",
-        ".section-dark .lead",
         ".section-dark + section",
-        ".section-dark a",
-        ".section-dark h1",
-        ".section-dark h2",
-        ".section-dark h3",
         ".stack-3 > * + *",
         ".stack-4 > * + *",
         ".stack-5 > * + *",
@@ -551,13 +544,11 @@
         "section"
       ],
       "tokenReferences": [
-        "--accent",
         "--border",
         "--container-gutter-desktop",
         "--container-gutter-phone",
         "--container-gutter-tablet",
         "--container-max",
-        "--fg",
         "--section-y-desktop",
         "--section-y-phone",
         "--section-y-tablet",

@@ -529,11 +529,6 @@
       "selectors": [
         ".container",
         ".row-between",
-        ".section-dark",
-        ".section-dark .body-muted",
-        ".section-dark .eyebrow",
-        ".section-dark .lead",
-        ".section-dark a:hover",
         ".stack-3 > * + *",
         ".stack-4 > * + *",
         ".stack-5 > * + *",
@@ -552,7 +547,6 @@
         "section"
       ],
       "tokenReferences": [
-        "--accent",
         "--container-gutter-desktop",
         "--container-gutter-phone",
         "--container-gutter-tablet",

@@ -555,12 +555,6 @@
       "present": true,
       "selectors": [
         ".container",
-        ".nav-links",
-        ".nav-links a",
-        ".nav-links a:hover",
-        ".nav-logo",
-        ".nav-logo:hover",
-        ".nav-row",
         ".row-between",
         ".stack-2 > * + *",
         ".stack-3 > * + *",
@@ -582,22 +576,18 @@
         "section"
       ],
       "tokenReferences": [
-        "--accent",
         "--border",
         "--container-gutter-desktop",
         "--container-gutter-phone",
         "--container-gutter-tablet",
         "--container-max",
-        "--fg-2",
-        "--font-display",
         "--section-y-desktop",
         "--section-y-phone",
         "--section-y-tablet",
         "--space-2",
         "--space-3",
         "--space-4",
-        "--space-6",
-        "--text-lg"
+        "--space-6"
       ]
     }
   ],
