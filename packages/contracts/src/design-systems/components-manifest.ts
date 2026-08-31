@@ -237,6 +237,39 @@ function selectorContainsTypeSelector(selector: string, name: string): boolean {
 
 const SELECTOR_IDENT_CHAR = /[-\w\u0080-\uffff]/;
 
+const HEX_DIGIT = /[0-9a-f]/i;
+
+/**
+ * Exclusive end index of the CSS escape starting at `start` (a backslash):
+ * either a single escaped source character, or up to six hex digits plus one
+ * optional whitespace terminator that belongs to the escape, not to the
+ * surrounding selector.
+ */
+function cssEscapeEndIndex(text: string, start: number): number {
+  let index = start + 1;
+  if (index >= text.length) return index;
+  if (!HEX_DIGIT.test(text.charAt(index))) return index + 1;
+  let digits = 0;
+  while (digits < 6 && HEX_DIGIT.test(text.charAt(index))) {
+    index += 1;
+    digits += 1;
+  }
+  if (/[ \t\n\r\f]/.test(text.charAt(index))) index += 1;
+  return index;
+}
+
+/** Decoded character of the escape spanning [start, end); U+FFFD when the code point is invalid. */
+function decodeCssEscape(text: string, start: number, end: number): string {
+  const body = text.slice(start + 1, end);
+  if (body === '') return '\ufffd';
+  if (!HEX_DIGIT.test(body.charAt(0))) return body;
+  const codePoint = Number.parseInt(body.trim(), 16);
+  if (Number.isNaN(codePoint) || codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+    return '\ufffd';
+  }
+  return String.fromCodePoint(codePoint);
+}
+
 /** Functional pseudo-classes whose arguments are themselves selectors. */
 const SELECTOR_BEARING_PSEUDO_CLASSES = new Set(['is', 'where', 'not', 'has', 'host', 'host-context']);
 
@@ -246,7 +279,10 @@ const SELECTOR_BEARING_PSEUDO_CLASSES = new Set(['is', 'where', 'not', 'has', 'h
  * pseudo-element arguments — replacing them with spaces so the surviving
  * text can be matched for element names with plain boundary checks.
  * Quotes and CSS escapes inside attribute blocks are honored so a bracket
- * or quote inside a string never ends the block early.
+ * or quote inside a string never ends the block early. Escapes are consumed
+ * in full (hex digits plus the optional whitespace terminator), and escapes
+ * at type-selector positions are decoded so `\\62 utton` reads as `button`
+ * while a decoded non-ident character keeps the identifier glued together.
  */
 function maskNonTypeSelectorText(selector: string): string {
   let out = '';
@@ -256,8 +292,9 @@ function maskNonTypeSelectorText(selector: string): string {
     while (index < selector.length) {
       const char = selector.charAt(index);
       if (char === '\\') {
-        out += '  ';
-        index += 2;
+        const end = cssEscapeEndIndex(selector, index);
+        out += ' '.repeat(end - index);
+        index = end;
         continue;
       }
       if (!SELECTOR_IDENT_CHAR.test(char)) break;
@@ -271,8 +308,9 @@ function maskNonTypeSelectorText(selector: string): string {
     while (index < selector.length) {
       const char = selector.charAt(index);
       if (char === '\\') {
-        out += '  ';
-        index += 2;
+        const end = cssEscapeEndIndex(selector, index);
+        out += ' '.repeat(end - index);
+        index = end;
         continue;
       }
       if (char === '"' || char === "'") {
@@ -281,8 +319,9 @@ function maskNonTypeSelectorText(selector: string): string {
         while (index < selector.length) {
           const quoted = selector.charAt(index);
           if (quoted === '\\') {
-            out += '  ';
-            index += 2;
+            const quotedEnd = cssEscapeEndIndex(selector, index);
+            out += ' '.repeat(quotedEnd - index);
+            index = quotedEnd;
             continue;
           }
           out += ' ';
@@ -329,8 +368,10 @@ function maskNonTypeSelectorText(selector: string): string {
   while (index < selector.length) {
     const char = selector.charAt(index);
     if (char === '\\') {
-      out += '  ';
-      index += 2;
+      const end = cssEscapeEndIndex(selector, index);
+      const decoded = decodeCssEscape(selector, index, end);
+      out += SELECTOR_IDENT_CHAR.test(decoded) ? decoded : '_';
+      index = end;
       continue;
     }
     if (char === '.' || char === '#') {
@@ -585,6 +626,14 @@ function splitBlockPrelude(segment: string): { leadingDeclarations: string; prel
   let lastSemicolon = -1;
   for (let index = 0; index < segment.length; index += 1) {
     const char = segment[index];
+    if (char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      index = findStringEnd(segment, index);
+      continue;
+    }
     if (char === '(' || char === '[') depth += 1;
     else if (char === ')' || char === ']') depth = Math.max(0, depth - 1);
     else if (char === ';' && depth === 0) lastSemicolon = index;

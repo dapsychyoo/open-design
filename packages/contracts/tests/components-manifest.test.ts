@@ -212,6 +212,52 @@ describe('components manifest extraction', () => {
     expect(inputs?.tokenReferences).toEqual(['--accent']);
   });
 
+  it('consumes full CSS hex escapes and decodes escaped type-selector names', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226-hex-escapes',
+      fixtureHtml: `
+        <style>
+          :root { --accent: #05f; --muted: #889; }
+          \\62 utton { color: var(--accent); }
+          .foo\\20 button { color: var(--muted); }
+          .bar\\2c section { color: var(--muted); }
+        </style>
+        <button class="btn">x</button>
+      `,
+    });
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.selectors).toEqual(['\\62 utton']);
+    expect(buttons?.tokenReferences).toEqual(['--accent']);
+
+    const layout = manifest.groups.find((group) => group.id === 'layout');
+    expect(layout?.selectors).toEqual([]);
+  });
+
+  it('keeps quoted delimiters in declaration values out of the prelude split', () => {
+    const manifest = extractComponentsManifest({
+      brandId: 'pr-6226-quoted-prelude',
+      fixtureHtml: `
+        <style>
+          :root { --base: #05f; --hover: #04d; }
+          .btn { content: "["; color: var(--base); &:hover { color: var(--hover); } }
+          .chip { content: "("; color: var(--base); &:hover { color: var(--hover); } }
+        </style>
+        <button class="btn">x</button>
+      `,
+    });
+
+    expect(manifest.selectors).toEqual(['.btn', '.btn:hover', '.chip', '.chip:hover']);
+
+    const buttons = manifest.groups.find((group) => group.id === 'buttons');
+    expect(buttons?.selectors).toEqual(['.btn', '.btn:hover']);
+    expect(buttons?.tokenReferences).toEqual(['--base', '--hover']);
+
+    const badges = manifest.groups.find((group) => group.id === 'badges');
+    expect(badges?.selectors).toEqual(['.chip', '.chip:hover']);
+    expect(badges?.tokenReferences).toEqual(['--base', '--hover']);
+  });
+
   it('traverses @scope and @starting-style blocks like other grouping at-rules', () => {
     const manifest = extractComponentsManifest({
       brandId: 'pr-6226',
