@@ -54,6 +54,7 @@ export interface ResourceDeps {
   listAllDesignSystems: (options?: {
     workspaceId?: string | null;
     workspaceMemberId?: string | null;
+    workspaceType?: 'personal' | 'team' | null;
   }) => Promise<Array<DesignSystemSummary & { source?: string }>>;
   // The workspace a catalog read should be scoped to (#145). Data-plane reads
   // resolve it from this exact request's explicit Workspace/member identity,

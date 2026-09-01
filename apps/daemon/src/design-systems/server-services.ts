@@ -11,6 +11,7 @@ import {
   getWorkspaceResourceByResourceId,
 } from '../db.js';
 import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
+import { isUnattributedLocalPersonalDesignSystemBinding } from '../collab/workspace-resource-mutation.js';
 import { workspaceTeamDesignSystemBindingAllowsRead } from './workspace-team-binding.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -66,9 +67,21 @@ type DesignSystemListOptions = {
   workspaceId?: string | null;
 };
 
+/**
+ * How the caller's Workspace scope was asserted. Requests normalize the
+ * `x-od-workspace-type` header exactly like `workspaceResourceContext`
+ * (collab/workspace-resource-mutation.ts): `'team'` only on an explicit
+ * assertion, `'personal'` otherwise. Gates below treat only an explicit
+ * `'personal'` as eligible for the legacy unattributed-binding allowance, so
+ * a caller that does not thread the type stays on the strict pre-existing
+ * behavior (fail-closed).
+ */
+type DesignSystemWorkspaceScopeType = 'personal' | 'team';
+
 type DesignSystemWorkspaceOptions = {
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
+  workspaceType?: DesignSystemWorkspaceScopeType | null;
   /** A verified Team binding forbids same-id Personal fallback. */
   exactTeam?: boolean;
 };
@@ -84,24 +97,38 @@ export type DesignSystemAssetSyncOutcome =
  * `workspaceId` claim while the envelope keeps the binding correct (issue
  * #6763), so the envelope alone must decide for `visibility: 'personal'`
  * systems. Mirrors `skillVisibleFromBinding` in `skills.ts`.
+ *
+ * A personal binding is readable by its exact recorded creator member — or,
+ * when the row is unattributed (see
+ * {@link isUnattributedLocalPersonalDesignSystemBinding}), by any member of
+ * the same workspace whose scope explicitly asserts a non-team (`'personal'`)
+ * workspace, mirroring the projects-layer ruling for memberless legacy rows.
  */
 function designSystemBindingAllowsRead(
   binding: ReturnType<typeof getWorkspaceResourceByResourceId>,
   workspaceId: string,
   workspaceMemberId: string,
+  workspaceType?: DesignSystemWorkspaceScopeType | null,
 ): boolean {
-  return Boolean(
-    binding
-    && binding.workspaceId === workspaceId
-    && binding.visibility === 'personal'
-    && binding.resourceState !== 'deleted'
-    && binding.createdByWorkspaceMemberId === workspaceMemberId,
+  if (
+    !binding
+    || binding.workspaceId !== workspaceId
+    || binding.visibility !== 'personal'
+    || binding.resourceState === 'deleted'
+  ) {
+    return false;
+  }
+  if (binding.createdByWorkspaceMemberId === workspaceMemberId) return true;
+  return (
+    workspaceType === 'personal'
+    && isUnattributedLocalPersonalDesignSystemBinding(binding)
   );
 }
 
 type DesignSystemUserReadScope = {
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
+  workspaceType?: DesignSystemWorkspaceScopeType | null;
 };
 
 /**
@@ -112,7 +139,10 @@ type DesignSystemUserReadScope = {
  * stays readable after a re-finalize dropped its metadata claim; otherwise
  * keep the current metadata-gated read so claimed/hidden states behave as
  * before. An explicit signed-out/incomplete scope hides envelope-bound
- * systems, mirroring the catalog lane (spec 04 §10).
+ * systems, mirroring the catalog lane (spec 04 §10) — except an unattributed
+ * local personal envelope (see
+ * {@link isUnattributedLocalPersonalDesignSystemBinding}), which stays
+ * readable to local callers in every lane.
  */
 function designSystemUserReadOptions(
   db: Database.Database | undefined,
@@ -128,13 +158,28 @@ function designSystemUserReadOptions(
   if (scope.workspaceId !== undefined && (!workspaceId || !workspaceMemberId)) {
     // Explicit signed-out/incomplete scope (`null`, `''`, or a memberless
     // positive workspace): a persisted envelope is positive evidence the
-    // resource is not local-public and must stay hidden.
-    if (db && getWorkspaceResourceByResourceId(db, 'design_system', id)) return null;
+    // resource is not local-public and must stay hidden — UNLESS the envelope
+    // itself is an unattributed local personal claim (the backfill's output
+    // on a never-signed-in install), which is the local user's own resource
+    // and must stay readable to local callers. For the memberless positive
+    // workspace lane the claim must additionally name that exact workspace.
+    if (db) {
+      const binding = getWorkspaceResourceByResourceId(db, 'design_system', id);
+      if (binding) {
+        if (
+          isUnattributedLocalPersonalDesignSystemBinding(binding)
+          && (!workspaceId || binding.workspaceId === workspaceId)
+        ) {
+          return { idPrefix: 'user:' };
+        }
+        return null;
+      }
+    }
     return metadataGated;
   }
   if (!db || !workspaceId || !workspaceMemberId) return metadataGated;
   const binding = getWorkspaceResourceByResourceId(db, 'design_system', id);
-  if (designSystemBindingAllowsRead(binding, workspaceId, workspaceMemberId)) {
+  if (designSystemBindingAllowsRead(binding, workspaceId, workspaceMemberId, scope.workspaceType)) {
     // Issue #6763: the binding is authoritative even when a re-finalize
     // dropped `workspaceId` from metadata.json — read the FS copy unscoped.
     return { idPrefix: 'user:' };
@@ -230,6 +275,19 @@ export function createDesignSystemServerServices({
     designSystem: DesignSystemSummary,
   ) => void;
 }) {
+  // Hiding a resource from the catalog must never be silent: this class of
+  // bug otherwise gets diagnosed by reverse-engineering the filter. One line
+  // per (system, scope, reason) per daemon lifetime keeps a hot, frequently
+  // polled list endpoint from spamming the log while still answering "why is
+  // my system not in the list" from the daemon log alone.
+  const loggedCatalogHides = new Set<string>();
+  function logCatalogHide(systemId: string, scope: string, reason: string): void {
+    const key = `${systemId}\u0000${scope}\u0000${reason}`;
+    if (loggedCatalogHides.has(key)) return;
+    loggedCatalogHides.add(key);
+    console.warn(`[design-systems] catalog hid ${systemId} (${scope}): ${reason}`);
+  }
+
   /**
    * The functional-skills catalog. `workspaceId` narrows it to the
    * user-imported skills that workspace may see (mirrors
@@ -355,11 +413,21 @@ export function createDesignSystemServerServices({
    * the system correctly bound, so the metadata alone must never decide. The
    * signed-out lane hides BOTH envelope-bound systems and metadata-claimed
    * systems (spec 04 §10) — only genuinely unclaimed resources stay visible
-   * to a headerless caller.
+   * to a headerless caller, plus resources whose envelope is an unattributed
+   * local personal claim (see
+   * {@link isUnattributedLocalPersonalDesignSystemBinding}): that shape is
+   * the startup backfill's own output on an install that never signed into a
+   * Workspace, and hiding it would leave the resource with no readable lane
+   * at all.
+   *
+   * Every hide decision below logs its reason once per daemon lifetime, so
+   * "why is my system not in the list" is answerable from the daemon log
+   * instead of by reverse-engineering this filter.
    */
   async function listAllDesignSystems(options: {
     workspaceId?: string | null;
     workspaceMemberId?: string | null;
+    workspaceType?: DesignSystemWorkspaceScopeType | null;
     exactTeam?: boolean;
   } = {}) {
     const builtIn = (await designSystems.listDesignSystems(paths.DESIGN_SYSTEMS_DIR)).map((s) => ({
@@ -429,31 +497,74 @@ export function createDesignSystemServerServices({
     const exactWorkspaceId = options.workspaceId?.trim() ?? '';
     const exactMemberId = options.workspaceMemberId?.trim() ?? '';
     const db = getDb?.();
+    const scopeLabel = exactWorkspaceId || exactMemberId
+      ? `workspace=${exactWorkspaceId || '(none)'} member=${exactMemberId || '(none)'}`
+      : 'signed-out';
     return catalog.filter((system) => {
       if (system.source !== 'user') return true;
       // A fully headerless request is the signed-out/local compatibility
       // lane. It may see resources that have never been claimed by any
       // Workspace, but both a persisted binding and a metadata claim are
       // positive evidence that the resource is not local-public and must stay
-      // hidden without authority (spec 04 §10, issue #6763).
+      // hidden without authority (spec 04 §10, issue #6763) — except an
+      // unattributed local personal binding, which is the local user's own.
       if (!exactWorkspaceId && !exactMemberId) {
-        if (!db) return false;
-        return !system.workspaceId?.trim()
-          && !getWorkspaceResourceByResourceId(
-            db,
-            'design_system',
-            system.id,
-          );
+        if (!db) {
+          logCatalogHide(system.id, scopeLabel, 'no database open for the signed-out catalog');
+          return false;
+        }
+        const binding = getWorkspaceResourceByResourceId(db, 'design_system', system.id);
+        if (binding) {
+          if (isUnattributedLocalPersonalDesignSystemBinding(binding)) return true;
+          logCatalogHide(system.id, scopeLabel, 'bound to a Workspace; a signed-out caller cannot read it');
+          return false;
+        }
+        if (system.workspaceId?.trim()) {
+          logCatalogHide(system.id, scopeLabel, 'metadata claims a Workspace; a signed-out caller cannot read it');
+          return false;
+        }
+        return true;
       }
       if (system.teamSynced === true) {
-        return Boolean(exactWorkspaceId) && system.workspaceId === exactWorkspaceId;
+        if (Boolean(exactWorkspaceId) && system.workspaceId === exactWorkspaceId) return true;
+        logCatalogHide(system.id, scopeLabel, 'team mirror belongs to another Workspace');
+        return false;
       }
-      if (!db || !exactWorkspaceId || !exactMemberId) return false;
-      return designSystemBindingAllowsRead(
-        getWorkspaceResourceByResourceId(db, 'design_system', system.id),
-        exactWorkspaceId,
-        exactMemberId,
+      if (!db || !exactWorkspaceId) {
+        logCatalogHide(system.id, scopeLabel, 'incomplete Workspace scope');
+        return false;
+      }
+      const binding = getWorkspaceResourceByResourceId(db, 'design_system', system.id);
+      if (!exactMemberId) {
+        // A workspace-bound caller with NO member identity of its own — a
+        // legacy memberless project driving a run — may read exactly the
+        // resources that are equally unattributed in its own workspace.
+        if (
+          binding?.workspaceId === exactWorkspaceId
+          && isUnattributedLocalPersonalDesignSystemBinding(binding)
+        ) {
+          return true;
+        }
+        logCatalogHide(system.id, scopeLabel, 'memberless scope may only read unattributed bindings of its own workspace');
+        return false;
+      }
+      if (designSystemBindingAllowsRead(binding, exactWorkspaceId, exactMemberId, options.workspaceType)) {
+        return true;
+      }
+      logCatalogHide(
+        system.id,
+        scopeLabel,
+        !binding
+          ? 'unclaimed systems are quarantined from explicit Workspace scopes'
+          : binding.workspaceId !== exactWorkspaceId
+            ? 'bound to another Workspace'
+            : binding.resourceState === 'deleted'
+              ? 'binding is tombstoned'
+              : binding.visibility !== 'personal'
+                ? 'team-visibility binding requires the Team catalog lane'
+                : 'personal binding belongs to another member',
       );
+      return false;
     });
   }
 

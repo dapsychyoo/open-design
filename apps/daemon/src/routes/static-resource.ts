@@ -32,6 +32,7 @@ import {
 } from '../db.js';
 import {
   enforceVerifiedWorkspaceResourceMutation,
+  isUnattributedLocalPersonalDesignSystemBinding,
   resolveOptionalLocalWorkspaceRequestAuthority,
   type VerifyWorkspaceRequestAuthority,
 } from '../collab/workspace-resource-mutation.js';
@@ -810,9 +811,11 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const workspaceId = workspaceContext?.workspaceId
         ?? (catalogAuthority ? null : (await resolveWorkspaceScope?.(req)) ?? null);
       const workspaceMemberId = workspaceContext?.workspaceMemberId ?? null;
+      const workspaceType = workspaceContext?.workspaceType ?? null;
       const catalog = await listAllDesignSystems({
         workspaceId,
         workspaceMemberId,
+        workspaceType,
       });
       const visibleSystems = workspaceId && workspaceMemberId
         ? catalog.filter((system) => {
@@ -837,7 +840,9 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
             return personalBinding?.workspaceId === workspaceId
               && personalBinding.visibility !== 'team'
               && personalBinding.resourceState !== 'deleted'
-              && personalBinding.createdByWorkspaceMemberId === workspaceMemberId;
+              && (personalBinding.createdByWorkspaceMemberId === workspaceMemberId
+                || (workspaceType === 'personal'
+                  && isUnattributedLocalPersonalDesignSystemBinding(personalBinding)));
           })
         : catalog;
       // recvqb6mfyqXLD: decorate every teamSynced entry with the same

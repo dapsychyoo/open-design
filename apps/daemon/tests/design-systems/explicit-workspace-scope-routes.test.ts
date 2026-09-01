@@ -524,6 +524,7 @@ describe('design-system explicit Workspace request scope', () => {
     expect(listAllDesignSystems).toHaveBeenCalledWith({
       workspaceId: 'workspace-a',
       workspaceMemberId: null,
+      workspaceType: null,
     });
   });
 

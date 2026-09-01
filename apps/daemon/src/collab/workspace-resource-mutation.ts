@@ -179,6 +179,48 @@ export type OptionalWorkspaceRequestAuthorityResult =
   | Exclude<WorkspaceRequestAuthorityResult, { ok: true }>;
 
 /**
+ * Is `binding` a legacy local personal claim with NO recorded creator member?
+ *
+ * Legacy `workspace_projects` rows written by lazy orphan adoption carry no
+ * creator member on purpose (`ensureWorkspaceProjection`,
+ * routes/project/index.ts), and the design-system startup backfill
+ * (`backfillDesignSystemWorkspaceResources`) propagates that absence into the
+ * `workspace_resources` envelope it infers from them — the normal state of an
+ * install that has never signed into a Workspace. Such a binding cannot
+ * belong to "another member": it carries no member attribution at all. The
+ * projects layer already rules that this state means "the local user's own
+ * resource" outside team views (`workspaceProjectCreatedByCurrentMember`,
+ * routes/project/index.ts); this predicate is the design-system half of the
+ * same ruling. Team-visibility and tombstoned rows are never legacy-local.
+ *
+ * Invariant this predicate protects: no lane of the daemon may manufacture a
+ * binding that every read gate categorically rejects. The backfill writes
+ * unattributed personal rows when the member is unknown, so the read gates
+ * MUST accept exactly that shape for local (non-team) callers — otherwise a
+ * claimed system becomes invisible in the scoped lane (member mismatch) AND
+ * in the headerless lane (the row reads as foreign-ownership evidence), with
+ * no lane left that can ever show it.
+ */
+export function isUnattributedLocalPersonalDesignSystemBinding(
+  binding:
+    | {
+        visibility?: string | null;
+        resourceState?: string | null;
+        createdByWorkspaceMemberId?: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  return Boolean(
+    binding
+    && binding.visibility === 'personal'
+    && binding.resourceState !== 'deleted'
+    && !(typeof binding.createdByWorkspaceMemberId === 'string'
+      && binding.createdByWorkspaceMemberId.trim()),
+  );
+}
+
+/**
  * Resolve Workspace identity for daemon-local data-plane work.
  *
  * The browser's Workspace headers are attribution and namespace selectors on
@@ -845,12 +887,18 @@ export async function enforceVerifiedWorkspaceResourceRead(
   }
   const context = workspaceResourceContextFromVerified(verified.context);
   const row = getWorkspaceResource(db, context.workspaceId, resourceId);
+  // Design system mirrors project's memberless-legacy allowance: an
+  // unattributed personal row read from a non-team scope is the local user's
+  // own resource (see `isUnattributedLocalPersonalDesignSystemBinding`), so
+  // only attributed rows keep the strict exact-creator requirement.
   const strictPersonalCreator =
     row?.visibility === 'personal'
     && (
       resourceType === 'plugin'
       || resourceType === 'skill'
-      || resourceType === 'design_system'
+      || (resourceType === 'design_system'
+        && !(context.workspaceType === 'personal'
+          && isUnattributedLocalPersonalDesignSystemBinding(row)))
       || (resourceType === 'project' && row.createdByWorkspaceMemberId != null)
     );
   if (
