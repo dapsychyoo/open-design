@@ -31,6 +31,7 @@ import {
   getWorkspaceResourceByResourceId,
 } from '../db.js';
 import {
+  assertedWorkspaceScopeType,
   enforceVerifiedWorkspaceResourceMutation,
   isUnattributedLocalPersonalDesignSystemBinding,
   resolveOptionalLocalWorkspaceRequestAuthority,
@@ -811,11 +812,14 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const workspaceId = workspaceContext?.workspaceId
         ?? (catalogAuthority ? null : (await resolveWorkspaceScope?.(req)) ?? null);
       const workspaceMemberId = workspaceContext?.workspaceMemberId ?? null;
-      const workspaceType = workspaceContext?.workspaceType ?? null;
+      // The legacy unattributed-binding allowance keys on the caller's
+      // EXPLICIT type assertion, never the verified context's normalized
+      // `workspaceType` (a missing header normalizes to 'personal').
+      const workspaceTypeAsserted = assertedWorkspaceScopeType(req);
       const catalog = await listAllDesignSystems({
         workspaceId,
         workspaceMemberId,
-        workspaceType,
+        workspaceTypeAsserted,
       });
       const visibleSystems = workspaceId && workspaceMemberId
         ? catalog.filter((system) => {
@@ -841,7 +845,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
               && personalBinding.visibility !== 'team'
               && personalBinding.resourceState !== 'deleted'
               && (personalBinding.createdByWorkspaceMemberId === workspaceMemberId
-                || (workspaceType === 'personal'
+                || (workspaceTypeAsserted === 'personal'
                   && isUnattributedLocalPersonalDesignSystemBinding(personalBinding)));
           })
         : catalog;

@@ -68,12 +68,13 @@ type DesignSystemListOptions = {
 };
 
 /**
- * How the caller's Workspace scope was asserted. Requests normalize the
- * `x-od-workspace-type` header exactly like `workspaceResourceContext`
- * (collab/workspace-resource-mutation.ts): `'team'` only on an explicit
- * assertion, `'personal'` otherwise. Gates below treat only an explicit
- * `'personal'` as eligible for the legacy unattributed-binding allowance, so
- * a caller that does not thread the type stays on the strict pre-existing
+ * The caller's EXPLICIT Workspace-type assertion (the raw
+ * `x-od-workspace-type` claim, `assertedWorkspaceScopeType` in
+ * collab/workspace-resource-mutation.ts) — never the normalized
+ * `workspaceType`, which collapses a missing header to `'personal'`. Gates
+ * below grant the legacy unattributed-binding allowance only on an explicit
+ * `'personal'` assertion, so a caller that omits the optional header — or a
+ * lane that never threads the assertion — stays on the strict pre-existing
  * behavior (fail-closed).
  */
 type DesignSystemWorkspaceScopeType = 'personal' | 'team';
@@ -81,7 +82,7 @@ type DesignSystemWorkspaceScopeType = 'personal' | 'team';
 type DesignSystemWorkspaceOptions = {
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
-  workspaceType?: DesignSystemWorkspaceScopeType | null;
+  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
   /** A verified Team binding forbids same-id Personal fallback. */
   exactTeam?: boolean;
 };
@@ -101,14 +102,15 @@ export type DesignSystemAssetSyncOutcome =
  * A personal binding is readable by its exact recorded creator member — or,
  * when the row is unattributed (see
  * {@link isUnattributedLocalPersonalDesignSystemBinding}), by any member of
- * the same workspace whose scope explicitly asserts a non-team (`'personal'`)
- * workspace, mirroring the projects-layer ruling for memberless legacy rows.
+ * the same workspace whose scope EXPLICITLY asserts a personal workspace.
+ * An unasserted type is not an assertion — the allowance stays off. This
+ * mirrors the projects-layer ruling for memberless legacy rows.
  */
 function designSystemBindingAllowsRead(
   binding: ReturnType<typeof getWorkspaceResourceByResourceId>,
   workspaceId: string,
   workspaceMemberId: string,
-  workspaceType?: DesignSystemWorkspaceScopeType | null,
+  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null,
 ): boolean {
   if (
     !binding
@@ -120,7 +122,7 @@ function designSystemBindingAllowsRead(
   }
   if (binding.createdByWorkspaceMemberId === workspaceMemberId) return true;
   return (
-    workspaceType === 'personal'
+    workspaceTypeAsserted === 'personal'
     && isUnattributedLocalPersonalDesignSystemBinding(binding)
   );
 }
@@ -128,7 +130,7 @@ function designSystemBindingAllowsRead(
 type DesignSystemUserReadScope = {
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
-  workspaceType?: DesignSystemWorkspaceScopeType | null;
+  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
 };
 
 /**
@@ -179,7 +181,7 @@ function designSystemUserReadOptions(
   }
   if (!db || !workspaceId || !workspaceMemberId) return metadataGated;
   const binding = getWorkspaceResourceByResourceId(db, 'design_system', id);
-  if (designSystemBindingAllowsRead(binding, workspaceId, workspaceMemberId, scope.workspaceType)) {
+  if (designSystemBindingAllowsRead(binding, workspaceId, workspaceMemberId, scope.workspaceTypeAsserted)) {
     // Issue #6763: the binding is authoritative even when a re-finalize
     // dropped `workspaceId` from metadata.json — read the FS copy unscoped.
     return { idPrefix: 'user:' };
@@ -427,7 +429,7 @@ export function createDesignSystemServerServices({
   async function listAllDesignSystems(options: {
     workspaceId?: string | null;
     workspaceMemberId?: string | null;
-    workspaceType?: DesignSystemWorkspaceScopeType | null;
+    workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
     exactTeam?: boolean;
   } = {}) {
     const builtIn = (await designSystems.listDesignSystems(paths.DESIGN_SYSTEMS_DIR)).map((s) => ({
@@ -548,7 +550,7 @@ export function createDesignSystemServerServices({
         logCatalogHide(system.id, scopeLabel, 'memberless scope may only read unattributed bindings of its own workspace');
         return false;
       }
-      if (designSystemBindingAllowsRead(binding, exactWorkspaceId, exactMemberId, options.workspaceType)) {
+      if (designSystemBindingAllowsRead(binding, exactWorkspaceId, exactMemberId, options.workspaceTypeAsserted)) {
         return true;
       }
       logCatalogHide(
@@ -562,7 +564,9 @@ export function createDesignSystemServerServices({
               ? 'binding is tombstoned'
               : binding.visibility !== 'personal'
                 ? 'team-visibility binding requires the Team catalog lane'
-                : 'personal binding belongs to another member',
+                : isUnattributedLocalPersonalDesignSystemBinding(binding)
+                  ? 'unattributed binding requires an explicitly asserted personal scope'
+                  : 'personal binding belongs to another member',
       );
       return false;
     });

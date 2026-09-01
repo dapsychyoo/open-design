@@ -325,6 +325,65 @@ describe('local install without a Workspace sign-in keeps its personal design sy
     expect(foreignScope).not.toContain('user:skyfarm');
   });
 
+  it('keeps the strict gate for a same-workspace scope that does not assert its type', async () => {
+    // The `x-od-workspace-type` header is optional on the wire, and a missing
+    // header is NOT an assertion of a personal workspace: a Team client that
+    // simply omits the optional header must not inherit the personal-only
+    // legacy allowance. The allowance keys on the caller's EXPLICIT
+    // `personal` assertion (`workspaceTypeAsserted`), so an unasserted scope
+    // stays on the strict pre-existing behavior (fail-closed).
+    const seeded = await seedLocalInstall();
+    const catalogUrl = await startCatalogRoute(seeded);
+
+    const unasserted = await listCatalogIds(catalogUrl, {
+      'x-od-workspace-id': WORKSPACE,
+      'x-od-workspace-member-id': LOCAL_MEMBER,
+    });
+
+    expect(unasserted).not.toContain('user:skyfarm');
+  });
+
+  it('rejects the detail read for a same-workspace scope that does not assert its type', async () => {
+    const seeded = await seedLocalInstall();
+    const baseUrl = await startDetailRoute(seeded);
+
+    const resp = await fetch(`${baseUrl}/api/design-systems/user%3Askyfarm`, {
+      headers: {
+        'x-od-workspace-id': WORKSPACE,
+        'x-od-workspace-member-id': LOCAL_MEMBER,
+      },
+    });
+
+    expect(resp.status).toBe(403);
+  });
+
+  it('serves navigation reads whose URL carries the asserted personal scope', async () => {
+    // iframe/img navigations cannot attach headers; the web shell preserves
+    // the exact scope in query parameters (`workspaceResourceUrl`), including
+    // the asserted workspace type.
+    const seeded = await seedLocalInstall();
+    const baseUrl = await startDetailRoute(seeded);
+
+    const query = `workspaceId=${WORKSPACE}&workspaceMemberId=${LOCAL_MEMBER}&workspaceType=personal`;
+    const resp = await fetch(
+      `${baseUrl}/api/design-systems/user%3Askyfarm/preview?${query}`,
+    );
+
+    expect(resp.status).toBe(200);
+  });
+
+  it('rejects navigation reads whose URL does not assert the personal scope', async () => {
+    const seeded = await seedLocalInstall();
+    const baseUrl = await startDetailRoute(seeded);
+
+    const query = `workspaceId=${WORKSPACE}&workspaceMemberId=${LOCAL_MEMBER}`;
+    const resp = await fetch(
+      `${baseUrl}/api/design-systems/user%3Askyfarm/preview?${query}`,
+    );
+
+    expect(resp.status).toBe(403);
+  });
+
   it('serves the detail read for the local personal-workspace scope', async () => {
     const seeded = await seedLocalInstall();
     const baseUrl = await startDetailRoute(seeded);
@@ -351,7 +410,7 @@ describe('local install without a Workspace sign-in keeps its personal design sy
     const scoped = await seeded.services.listAllDesignSystems({
       workspaceId: WORKSPACE,
       workspaceMemberId: LOCAL_MEMBER,
-      workspaceType: 'personal',
+      workspaceTypeAsserted: 'personal',
     } as never);
     const headerless = await seeded.services.listAllDesignSystems({
       workspaceId: null,
@@ -385,7 +444,7 @@ describe('local install without a Workspace sign-in keeps its personal design sy
     const scoped = await seeded.services.listAllDesignSystems({
       workspaceId: WORKSPACE,
       workspaceMemberId: LOCAL_MEMBER,
-      workspaceType: 'personal',
+      workspaceTypeAsserted: 'personal',
     } as never);
 
     expect(scoped.map((system) => system.id)).not.toContain('user:foreign');

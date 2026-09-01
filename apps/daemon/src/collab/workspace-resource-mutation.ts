@@ -150,9 +150,19 @@ export function requestWithWorkspaceNavigationScope(
     ? req.query.workspaceMemberId.trim()
     : '';
   if (!workspaceId && !workspaceMemberId) return req;
+  // The asserted workspace type travels with the identity pair so gates that
+  // key on the caller's EXPLICIT type assertion (`workspaceTypeAsserted`)
+  // treat a navigation read exactly like the header-carrying fetch that
+  // produced the URL. Values outside the enum are ignored, not normalized:
+  // an unasserted or garbled type must stay unasserted (fail-closed).
+  const queryWorkspaceType = typeof req.query?.workspaceType === 'string'
+    && (req.query.workspaceType === 'personal' || req.query.workspaceType === 'team')
+    ? req.query.workspaceType
+    : '';
   const headerWorkspaceId = req.get('x-od-workspace-id')?.trim() ?? '';
   const headerWorkspaceMemberId =
     req.get('x-od-workspace-member-id')?.trim() ?? '';
+  const headerWorkspaceType = req.get('x-od-workspace-type')?.trim() ?? '';
   if (
     (headerWorkspaceId || headerWorkspaceMemberId)
     && (
@@ -162,12 +172,18 @@ export function requestWithWorkspaceNavigationScope(
   ) {
     return 'conflict';
   }
+  if (queryWorkspaceType && headerWorkspaceType && headerWorkspaceType !== queryWorkspaceType) {
+    return 'conflict';
+  }
   return {
     get(name: string) {
       const normalized = name.toLowerCase();
       if (normalized === 'x-od-workspace-id') return workspaceId || undefined;
       if (normalized === 'x-od-workspace-member-id') {
         return workspaceMemberId || undefined;
+      }
+      if (normalized === 'x-od-workspace-type') {
+        return headerWorkspaceType || queryWorkspaceType || undefined;
       }
       return req.get(name);
     },
@@ -415,6 +431,20 @@ export type WorkspaceMutationAuthorityLease = {
     context: WorkspaceCollabContext,
   ) => boolean;
 };
+
+/**
+ * The caller's EXPLICIT `x-od-workspace-type` assertion, or null when the
+ * header is absent or out of enum. This is deliberately NOT the normalized
+ * `workspaceType` (`workspaceResourceContext` collapses a missing header to
+ * `'personal'`): gates that grant a personal-only allowance must key on the
+ * assertion so a Team caller cannot gain it by simply omitting the optional
+ * header. Mirrors `WorkspaceResourceContext.workspaceTypeAsserted` for call
+ * sites that hold only the request.
+ */
+export function assertedWorkspaceScopeType(req: any): 'personal' | 'team' | null {
+  const value = headerValue(req, 'x-od-workspace-type');
+  return value === 'personal' || value === 'team' ? value : null;
+}
 
 export function headerValue(req: any, name: string): string | null {
   const value = req.get(name);
@@ -888,16 +918,22 @@ export async function enforceVerifiedWorkspaceResourceRead(
   const context = workspaceResourceContextFromVerified(verified.context);
   const row = getWorkspaceResource(db, context.workspaceId, resourceId);
   // Design system mirrors project's memberless-legacy allowance: an
-  // unattributed personal row read from a non-team scope is the local user's
-  // own resource (see `isUnattributedLocalPersonalDesignSystemBinding`), so
-  // only attributed rows keep the strict exact-creator requirement.
+  // unattributed personal row is the local user's own resource (see
+  // `isUnattributedLocalPersonalDesignSystemBinding`), so only attributed
+  // rows keep the strict exact-creator requirement. The allowance keys on the
+  // caller's EXPLICIT personal assertion — never the normalized
+  // `workspaceType`, which collapses a missing header to `'personal'` and
+  // would hand the exception to a Team caller that omits the optional header.
+  const assertedPersonalScope =
+    claimed !== null && claimed !== 'missing'
+    && claimed.workspaceTypeAsserted === 'personal';
   const strictPersonalCreator =
     row?.visibility === 'personal'
     && (
       resourceType === 'plugin'
       || resourceType === 'skill'
       || (resourceType === 'design_system'
-        && !(context.workspaceType === 'personal'
+        && !(assertedPersonalScope
           && isUnattributedLocalPersonalDesignSystemBinding(row)))
       || (resourceType === 'project' && row.createdByWorkspaceMemberId != null)
     );

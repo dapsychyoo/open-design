@@ -20,6 +20,7 @@ import type {
 } from '../design-systems/generation-jobs.js';
 import { deleteWorkspaceResourceByResourceId, type openDatabase } from '../db.js';
 import {
+  assertedWorkspaceScopeType,
   enforceVerifiedWorkspaceResourceMutation,
   enforceVerifiedWorkspaceResourceRead,
   headerValue,
@@ -99,7 +100,7 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     listAllDesignSystems: (options?: {
       workspaceId?: string | null;
       workspaceMemberId?: string | null;
-      workspaceType?: 'personal' | 'team' | null;
+      workspaceTypeAsserted?: 'personal' | 'team' | null;
       exactTeam?: boolean;
     }) => Promise<AvailableDesignSystemSummary[]>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<DesignSystemFileSummary[] | null>;
@@ -107,16 +108,16 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     prepareDesignTokenContractRebuild: (root: string, id: string, options?: { force?: boolean }) => Promise<DesignTokenContractRebuildPreparation>;
     readAvailableDesignSystem: (
       id: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceType?: 'personal' | 'team' | null; exactTeam?: boolean },
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeAsserted?: 'personal' | 'team' | null; exactTeam?: boolean },
     ) => Promise<string | null>;
     readAvailableDesignSystemPackageInfo: (
       id: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceType?: 'personal' | 'team' | null; exactTeam?: boolean },
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeAsserted?: 'personal' | 'team' | null; exactTeam?: boolean },
     ) => Promise<DesignSystemPackageInfo | null>;
     readAvailableDesignSystemStaticFile: (
       id: string,
       filePath: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceType?: 'personal' | 'team' | null; exactTeam?: boolean },
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeAsserted?: 'personal' | 'team' | null; exactTeam?: boolean },
     ) => Promise<{
       bytes: Buffer;
       contentType: string;
@@ -253,14 +254,24 @@ export function registerDesignSystemRoutes(
   );
 
   /**
-   * The caller's asserted Workspace scope type, normalized exactly like
-   * `workspaceResourceContext` (collab/workspace-resource-mutation.ts):
-   * `'team'` only on an explicit assertion, `'personal'` otherwise. Read
-   * services use it to decide whether the unattributed-legacy-binding
-   * allowance applies (`isUnattributedLocalPersonalDesignSystemBinding`).
+   * The caller's EXPLICIT Workspace-type assertion, or null when nothing was
+   * asserted — never the normalized `workspaceType`, which collapses a
+   * missing header to `'personal'` and would hand the personal-only legacy
+   * allowance (`isUnattributedLocalPersonalDesignSystemBinding`) to a Team
+   * caller that omits the optional header. Navigation transports (iframe/img
+   * URLs) cannot attach headers, so routes that accept the query identity
+   * pair accept the same explicit assertion from the query.
    */
-  function requestWorkspaceScopeType(req: any): 'personal' | 'team' {
-    return headerValue(req, 'x-od-workspace-type') === 'team' ? 'team' : 'personal';
+  function requestAssertedWorkspaceScopeType(
+    req: any,
+    allowNavigationQuery = false,
+  ): 'personal' | 'team' | null {
+    const asserted = assertedWorkspaceScopeType(req);
+    if (asserted || !allowNavigationQuery) return asserted;
+    const queryType = typeof req.query?.workspaceType === 'string'
+      ? req.query.workspaceType
+      : '';
+    return queryType === 'personal' || queryType === 'team' ? queryType : null;
   }
 
   function resolveDesignSystemStorage(
@@ -360,7 +371,7 @@ export function registerDesignSystemRoutes(
         binding
         && binding.visibility !== 'team'
         && binding.createdByWorkspaceMemberId !== resolution.context.workspaceMemberId
-        && !(resolution.context.workspaceType === 'personal'
+        && !(assertedWorkspaceScopeType(scopedRequest) === 'personal'
           && isUnattributedLocalPersonalDesignSystemBinding(binding))
       )
     )) {
@@ -682,12 +693,12 @@ export function registerDesignSystemRoutes(
       if (!(await authorizeDesignSystemRead(req, res, req.params.id))) return;
       const workspaceId = headerValue(req, 'x-od-workspace-id');
       const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
-      const workspaceType = requestWorkspaceScopeType(req);
+      const workspaceTypeAsserted = requestAssertedWorkspaceScopeType(req);
       const storage = resolveDesignSystemStorage(req, req.params.id);
       const systems = await listAllDesignSystems({
         workspaceId,
         workspaceMemberId,
-        workspaceType,
+        workspaceTypeAsserted,
         exactTeam: storage.exactTeam,
       });
       const summary = systems.find((s) => s.id === req.params.id);
@@ -695,7 +706,7 @@ export function registerDesignSystemRoutes(
       const body = projectBody ?? await readAvailableDesignSystem(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceType,
+        workspaceTypeAsserted,
         exactTeam: storage.exactTeam,
       });
       if (body === null || !summary) {
@@ -704,7 +715,7 @@ export function registerDesignSystemRoutes(
       const packageInfo = await readAvailableDesignSystemPackageInfo(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceType,
+        workspaceTypeAsserted,
         exactTeam: storage.exactTeam,
       });
       // recvqb6mfyqXLD: mirror the exact PATCH/DELETE verdict onto the read
@@ -743,7 +754,7 @@ export function registerDesignSystemRoutes(
       const body = await readAvailableDesignSystem(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceType: requestWorkspaceScopeType(req),
+        workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true),
         exactTeam: storage.exactTeam,
       });
       if (body === null) return res.status(404).type('text/plain').send('not found');
@@ -769,7 +780,7 @@ export function registerDesignSystemRoutes(
       const packaged = await readAvailableDesignSystemStaticFile(
         req.params.id,
         PACKAGED_SHOWCASE_PATH,
-        { workspaceId, workspaceMemberId, workspaceType: requestWorkspaceScopeType(req), exactTeam: storage.exactTeam },
+        { workspaceId, workspaceMemberId, workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true), exactTeam: storage.exactTeam },
       );
       if (packaged?.contentType.startsWith('text/html')) {
         const workspaceQuery = designSystemNavigationWorkspaceQuery(req);
@@ -787,7 +798,7 @@ export function registerDesignSystemRoutes(
       const body = await readAvailableDesignSystem(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceType: requestWorkspaceScopeType(req),
+        workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true),
         exactTeam: storage.exactTeam,
       });
       if (body === null) return res.status(404).type('text/plain').send('not found');
@@ -814,7 +825,7 @@ export function registerDesignSystemRoutes(
       const file = await readAvailableDesignSystemStaticFile(
         req.params.id,
         requestedPath,
-        { workspaceId, workspaceMemberId, workspaceType: requestWorkspaceScopeType(req), exactTeam: storage.exactTeam },
+        { workspaceId, workspaceMemberId, workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true), exactTeam: storage.exactTeam },
       );
       if (!file) return res.status(404).type('text/plain').send('not found');
       res.setHeader('Cache-Control', 'no-store');
@@ -1078,7 +1089,7 @@ export function rewriteDesignSystemShowcaseAssetUrls(
   html: string,
   designSystemId: string,
   baseDir: string,
-  workspaceQuery?: { workspaceId: string; workspaceMemberId: string } | null,
+  workspaceQuery?: { workspaceId: string; workspaceMemberId: string; workspaceType?: 'personal' | 'team' } | null,
 ): string {
   if (!html) return html;
   return html
@@ -1106,7 +1117,7 @@ function rewriteDesignSystemShowcaseAssetUrl(
   rawUrl: string,
   designSystemId: string,
   baseDir: string,
-  workspaceQuery?: { workspaceId: string; workspaceMemberId: string } | null,
+  workspaceQuery?: { workspaceId: string; workspaceMemberId: string; workspaceType?: 'personal' | 'team' } | null,
 ): string {
   const value = rawUrl.trim();
   if (
@@ -1137,6 +1148,9 @@ function rewriteDesignSystemShowcaseAssetUrl(
     + (workspaceQuery
       ? `&workspaceId=${encodeURIComponent(workspaceQuery.workspaceId)}`
         + `&workspaceMemberId=${encodeURIComponent(workspaceQuery.workspaceMemberId)}`
+        + (workspaceQuery.workspaceType
+          ? `&workspaceType=${encodeURIComponent(workspaceQuery.workspaceType)}`
+          : '')
       : '');
   if (suffix.startsWith('?')) return `${staticUrl}&${suffix.slice(1)}`;
   return `${staticUrl}${suffix}`;
@@ -1144,14 +1158,16 @@ function rewriteDesignSystemShowcaseAssetUrl(
 
 function designSystemNavigationWorkspaceQuery(
   req: any,
-): { workspaceId: string; workspaceMemberId: string } | null {
+): { workspaceId: string; workspaceMemberId: string; workspaceType?: 'personal' | 'team' } | null {
   const workspaceId =
     typeof req.query?.workspaceId === 'string' ? req.query.workspaceId.trim() : '';
   const workspaceMemberId =
     typeof req.query?.workspaceMemberId === 'string'
       ? req.query.workspaceMemberId.trim()
       : '';
-  return workspaceId && workspaceMemberId
-    ? { workspaceId, workspaceMemberId }
-    : null;
+  if (!workspaceId || !workspaceMemberId) return null;
+  const workspaceType = req.query?.workspaceType;
+  return workspaceType === 'personal' || workspaceType === 'team'
+    ? { workspaceId, workspaceMemberId, workspaceType }
+    : { workspaceId, workspaceMemberId };
 }

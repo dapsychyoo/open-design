@@ -524,7 +524,9 @@ describe('design-system explicit Workspace request scope', () => {
     expect(listAllDesignSystems).toHaveBeenCalledWith({
       workspaceId: 'workspace-a',
       workspaceMemberId: null,
-      workspaceType: null,
+      // The route threads the caller's EXPLICIT type assertion (the fixture
+      // headers assert `team`), never a normalized fallback.
+      workspaceTypeAsserted: 'team',
     });
   });
 
