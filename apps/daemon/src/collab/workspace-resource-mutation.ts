@@ -237,6 +237,34 @@ export function isUnattributedLocalPersonalDesignSystemBinding(
 }
 
 /**
+ * The legacy local personal design-system allowance, decided once for every
+ * gate: does THIS caller reach THIS row through the ruling above?
+ *
+ * Two facts must both hold — the row is an unattributed personal design-system
+ * binding, and the caller's scope EXPLICITLY asserts a personal workspace
+ * (`assertedWorkspaceScopeType` / `WorkspaceResourceContext.workspaceTypeAsserted`,
+ * never the normalized `workspaceType`, which collapses a missing header to
+ * `'personal'`). A personal workspace has exactly one member — the local
+ * user — so the assertion is the ownership witness the row itself cannot
+ * carry. Read AND mutation gates share this predicate so the UI's capability
+ * projection (`canMutate`), the mutation routes, project validation, and
+ * run-time prompt loading cannot drift apart again. No other resource type
+ * has a memberless legacy lane; plugins and skills stay strictly
+ * creator-bound.
+ */
+export function unattributedLocalPersonalDesignSystemAllowance(
+  resourceType: string,
+  row: Parameters<typeof isUnattributedLocalPersonalDesignSystemBinding>[0],
+  workspaceTypeAsserted: 'personal' | 'team' | null | undefined,
+): boolean {
+  return (
+    resourceType === 'design_system'
+    && workspaceTypeAsserted === 'personal'
+    && isUnattributedLocalPersonalDesignSystemBinding(row)
+  );
+}
+
+/**
  * Resolve Workspace identity for daemon-local data-plane work.
  *
  * The browser's Workspace headers are attribution and namespace selectors on
@@ -574,9 +602,27 @@ function workspaceResourceMutationAllowed(
   row: WorkspaceResourceAccessInput | null | undefined,
   ctx: WorkspaceResourceContext,
   capability: WorkspaceResourceMutationCapability,
+  options: {
+    /**
+     * The caller's EXPLICIT `x-od-workspace-type` claim, threaded by the
+     * verified gate from the REQUEST — not from `ctx`, whose
+     * `workspaceTypeAsserted` is the verifier's normalized type. Only the
+     * legacy local personal design-system allowance reads it.
+     */
+    workspaceTypeAsserted?: 'personal' | 'team' | null;
+  } = {},
 ): boolean {
   if (!row) return false;
   const access = workspaceResourceAccess(row, ctx);
+  // An unattributed personal design-system row reached from an explicitly
+  // personal scope is the local user's own resource
+  // (`unattributedLocalPersonalDesignSystemAllowance`). `selfCreated` cannot
+  // witness that — the row records no creator — so the explicit assertion
+  // stands in for it, and every capability then follows the same
+  // frozen/lifecycle/permission checks a self-created row would.
+  if (unattributedLocalPersonalDesignSystemAllowance(resourceType, row, options.workspaceTypeAsserted)) {
+    return !access.frozen && ctx.canWriteSyncedFiles && ctx.memberStatus === 'active';
+  }
   const strictPersonalCreator =
     row.visibility === 'personal'
     && (
@@ -826,11 +872,19 @@ export async function enforceVerifiedWorkspaceResourceMutation(
 
   const context = workspaceResourceContextFromVerified(verified.context);
   const row = getWorkspaceResource(db, context.workspaceId, resourceId);
+  // The legacy local personal design-system allowance keys on the caller's
+  // EXPLICIT type claim, read from the request exactly as the read gate below
+  // does — `context.workspaceTypeAsserted` here is the verifier's normalized
+  // type and would hand the exception to a caller that omitted the header.
+  const claimed = workspaceResourceContextFromRequest(req);
+  const workspaceTypeAsserted =
+    claimed !== null && claimed !== 'missing' ? claimed.workspaceTypeAsserted : null;
   if (!workspaceResourceMutationAllowed(
     resourceType,
     row,
     context,
     capability,
+    { workspaceTypeAsserted },
   )) {
     const code = row && isWorkspaceResourceLocked(context)
       ? 'WORKSPACE_LOCKED'
@@ -919,22 +973,20 @@ export async function enforceVerifiedWorkspaceResourceRead(
   const row = getWorkspaceResource(db, context.workspaceId, resourceId);
   // Design system mirrors project's memberless-legacy allowance: an
   // unattributed personal row is the local user's own resource (see
-  // `isUnattributedLocalPersonalDesignSystemBinding`), so only attributed
+  // `unattributedLocalPersonalDesignSystemAllowance`), so only attributed
   // rows keep the strict exact-creator requirement. The allowance keys on the
   // caller's EXPLICIT personal assertion — never the normalized
   // `workspaceType`, which collapses a missing header to `'personal'` and
   // would hand the exception to a Team caller that omits the optional header.
-  const assertedPersonalScope =
-    claimed !== null && claimed !== 'missing'
-    && claimed.workspaceTypeAsserted === 'personal';
+  const workspaceTypeAsserted =
+    claimed !== null && claimed !== 'missing' ? claimed.workspaceTypeAsserted : null;
   const strictPersonalCreator =
     row?.visibility === 'personal'
     && (
       resourceType === 'plugin'
       || resourceType === 'skill'
       || (resourceType === 'design_system'
-        && !(assertedPersonalScope
-          && isUnattributedLocalPersonalDesignSystemBinding(row)))
+        && !unattributedLocalPersonalDesignSystemAllowance(resourceType, row, workspaceTypeAsserted))
       || (resourceType === 'project' && row.createdByWorkspaceMemberId != null)
     );
   if (

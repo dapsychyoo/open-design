@@ -33,8 +33,8 @@ import {
 import {
   assertedWorkspaceScopeType,
   enforceVerifiedWorkspaceResourceMutation,
-  isUnattributedLocalPersonalDesignSystemBinding,
   resolveOptionalLocalWorkspaceRequestAuthority,
+  unattributedLocalPersonalDesignSystemAllowance,
   type VerifyWorkspaceRequestAuthority,
 } from '../collab/workspace-resource-mutation.js';
 import { listCodexPets, readCodexPetSpritesheet } from '../codex-pets.js';
@@ -845,8 +845,11 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
               && personalBinding.visibility !== 'team'
               && personalBinding.resourceState !== 'deleted'
               && (personalBinding.createdByWorkspaceMemberId === workspaceMemberId
-                || (workspaceTypeAsserted === 'personal'
-                  && isUnattributedLocalPersonalDesignSystemBinding(personalBinding)));
+                || unattributedLocalPersonalDesignSystemAllowance(
+                  'design_system',
+                  personalBinding,
+                  workspaceTypeAsserted,
+                ));
           })
         : catalog;
       // recvqb6mfyqXLD: decorate every teamSynced entry with the same

@@ -24,9 +24,9 @@ import {
   enforceVerifiedWorkspaceResourceMutation,
   enforceVerifiedWorkspaceResourceRead,
   headerValue,
-  isUnattributedLocalPersonalDesignSystemBinding,
   requestWithWorkspaceNavigationScope,
   resolveOptionalLocalWorkspaceRequestAuthority,
+  unattributedLocalPersonalDesignSystemAllowance,
   type VerifyWorkspaceRequestAuthority,
   type WorkspaceResourceAccessInput,
 } from '../collab/workspace-resource-mutation.js';
@@ -94,6 +94,7 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
       options?: {
         workspaceId?: string | null;
         workspaceMemberId?: string | null;
+        workspaceTypeAsserted?: 'personal' | 'team' | null;
         exactTeam?: boolean;
       },
     ) => Promise<DesignSystemWorkspaceProject | null>;
@@ -141,6 +142,7 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
       options?: {
         workspaceId?: string | null;
         workspaceMemberId?: string | null;
+        workspaceTypeAsserted?: 'personal' | 'team' | null;
         exactTeam?: boolean;
       },
     ) => Promise<{ ok: true; synced: string[] } | { ok: false; reason: 'not-found' | 'no-workspace-project' }>;
@@ -371,8 +373,11 @@ export function registerDesignSystemRoutes(
         binding
         && binding.visibility !== 'team'
         && binding.createdByWorkspaceMemberId !== resolution.context.workspaceMemberId
-        && !(assertedWorkspaceScopeType(scopedRequest) === 'personal'
-          && isUnattributedLocalPersonalDesignSystemBinding(binding))
+        && !unattributedLocalPersonalDesignSystemAllowance(
+          'design_system',
+          binding,
+          assertedWorkspaceScopeType(scopedRequest),
+        )
       )
     )) {
       res.status(403).json({
@@ -443,11 +448,22 @@ export function registerDesignSystemRoutes(
         binding = personalBinding;
       }
     }
+    // Mirror `authorizeDesignSystemRead`: an unattributed local personal
+    // binding reached from an explicitly personal scope is the local user's
+    // own (`unattributedLocalPersonalDesignSystemAllowance`), so the UI's
+    // Publish/Edit/Delete controls — enabled by that read's `canMutate` — are
+    // backed by a mutation gate that accepts the same scope. The verified
+    // gate below applies the same allowance.
     if (resolution.context && (
       !binding
       || (
         binding.visibility !== 'team'
         && binding.createdByWorkspaceMemberId !== resolution.context.workspaceMemberId
+        && !unattributedLocalPersonalDesignSystemAllowance(
+          'design_system',
+          binding,
+          assertedWorkspaceScopeType(req),
+        )
       )
     )) {
       res.status(403).json({
@@ -846,7 +862,12 @@ export function registerDesignSystemRoutes(
         db,
         req.params.id,
         workspaceId || workspaceMemberId
-          ? { workspaceId, workspaceMemberId, exactTeam: storage.exactTeam }
+          ? {
+              workspaceId,
+              workspaceMemberId,
+              workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req),
+              exactTeam: storage.exactTeam,
+            }
           : undefined,
       );
       if (!workspace) {
@@ -962,7 +983,12 @@ export function registerDesignSystemRoutes(
         db,
         req.params.id,
         workspaceId || workspaceMemberId
-          ? { workspaceId, workspaceMemberId, exactTeam: storage.exactTeam }
+          ? {
+              workspaceId,
+              workspaceMemberId,
+              workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req),
+              exactTeam: storage.exactTeam,
+            }
           : undefined,
       );
       if (!outcome.ok) {

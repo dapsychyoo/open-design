@@ -7,7 +7,7 @@ import type {
 } from './context.js';
 import type { ProjectSyncIntent, ProjectSyncIntentEvent, ProjectSyncState } from './project-sync.js';
 import type { TeamResourceState } from './team-resources.js';
-import type { WorkspaceCollabContext } from './collab.js';
+import type { WorkspaceCollabContext, WorkspaceType } from './collab.js';
 
 export type ProjectKind =
   | 'prototype'
@@ -164,6 +164,15 @@ export interface PromptTemplateMetadata {
 export interface LocalCatalogScope {
   workspaceId: string;
   workspaceMemberId: string;
+  /**
+   * The workspace type the selecting client asserted for that partition (the
+   * same `x-od-workspace-type` its catalog reads carry). Daemon gates that
+   * key on the caller's explicit assertion — the legacy unattributed local
+   * personal design-system allowance — must see it again on project creation
+   * and at run time, where no request headers exist. Optional: an older
+   * draft without it stays unasserted.
+   */
+  workspaceType?: WorkspaceType;
 }
 
 export interface ProjectResourceCatalogScopes {

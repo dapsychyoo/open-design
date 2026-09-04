@@ -373,7 +373,10 @@ import {
   deleteWorkspaceOwnedDesignSystem as removeWorkspaceOwnedDesignSystem,
 } from './design-systems/workspace-owned-create.js';
 import { createDesignSystemGenerationJobStore } from './design-systems/generation-jobs.js';
-import { createDesignSystemServerServices } from './design-systems/server-services.js';
+import {
+  createDesignSystemServerServices,
+  designSystemPersonalBindingReadable,
+} from './design-systems/server-services.js';
 import {
   designSystemIdFromWorkspaceTeamBinding,
   designSystemLogicalResourceId,
@@ -9346,8 +9349,15 @@ export async function startServer({
       const workspaceMemberId = typeof value?.workspaceMemberId === 'string'
         ? value.workspaceMemberId.trim()
         : '';
+      // The type the selecting client asserted for that partition, persisted
+      // with it (`LocalCatalogScope.workspaceType`). Anything else stays
+      // unasserted rather than normalized.
+      const workspaceType =
+        value?.workspaceType === 'personal' || value?.workspaceType === 'team'
+          ? value.workspaceType
+          : null;
       return workspaceId && workspaceMemberId
-        ? { workspaceId, workspaceMemberId }
+        ? { workspaceId, workspaceMemberId, workspaceType }
         : null;
     };
     // Resource provenance is intentionally independent from project
@@ -9362,6 +9372,18 @@ export async function startServer({
       designSystemCatalogScope?.workspaceId ?? projectWorkspaceId;
     const designSystemMemberId =
       designSystemCatalogScope?.workspaceMemberId ?? projectCreatorMemberId;
+    // The explicit personal assertion behind the legacy unattributed-binding
+    // allowance (`designSystemPersonalBindingReadable`), for a lane that has
+    // no request headers of its own. Two witnesses, either sufficient, both
+    // silent by default (fail-closed): the type the selecting client asserted
+    // for the persisted catalog partition, else what this daemon has learned
+    // about the project's workspace from exact directory/context reads
+    // (`WorkspaceTypeRegistry`). Shell/current Workspace state still never
+    // participates — the workspace itself comes only from the persisted scope.
+    const designSystemWorkspaceTypeAsserted =
+      designSystemCatalogScope?.workspaceType
+      ?? workspaceTypes.typeOf(designSystemWorkspaceId)
+      ?? null;
     const projectDesignSystemBinding = (summary) => {
       if (!designSystemWorkspaceId || summary?.source === 'built-in') return null;
       const logicalResourceId =
@@ -9402,9 +9424,14 @@ export async function startServer({
         return false;
       }
       if (binding.visibility === 'team') return true;
-      return binding.visibility === 'personal'
-        && Boolean(designSystemMemberId)
-        && binding.createdByWorkspaceMemberId?.trim() === designSystemMemberId;
+      // The same personal-binding decision the catalog, the detail read, and
+      // project validation make, so a system a project could select is a
+      // system its run can load.
+      return designSystemPersonalBindingReadable(binding, {
+        workspaceId: designSystemWorkspaceId,
+        workspaceMemberId: designSystemMemberId,
+        workspaceTypeAsserted: designSystemWorkspaceTypeAsserted,
+      });
     };
     let appConfigForPrompt = null;
     try {
@@ -9729,6 +9756,7 @@ export async function startServer({
         ? {
             workspaceId: designSystemWorkspaceId,
             workspaceMemberId: designSystemMemberId || null,
+            workspaceTypeAsserted: designSystemWorkspaceTypeAsserted,
           }
         : {};
       let systems = await listAllDesignSystems(designSystemListOptions);

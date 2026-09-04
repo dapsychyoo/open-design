@@ -259,7 +259,85 @@ function parseLocalCatalogScope(value: unknown, field: string): LocalCatalogScop
   if (!workspaceId || !workspaceMemberId) {
     throw new Error(`${field} must contain workspaceId and workspaceMemberId`);
   }
-  return { workspaceId, workspaceMemberId };
+  // The type the client asserted for that partition travels with it. Values
+  // outside the enum are dropped, not normalized: an unasserted type must
+  // stay unasserted (fail-closed).
+  const workspaceType =
+    record.workspaceType === 'personal' || record.workspaceType === 'team'
+      ? record.workspaceType
+      : null;
+  return { workspaceId, workspaceMemberId, ...(workspaceType ? { workspaceType } : {}) };
+}
+
+/**
+ * A selection partition that carries no type assertion of its own (an older
+ * composer draft) inherits the request's, when the request names that same
+ * workspace: both are the same client's claim about the same partition, and
+ * the persisted provenance must carry what run-time prompt loading keys on.
+ */
+function withRequestAssertedWorkspaceType(
+  scope: LocalCatalogScope | null,
+  request: WorkspaceResourceContext | null,
+): LocalCatalogScope | null {
+  if (!scope || scope.workspaceType) return scope;
+  if (!request?.workspaceTypeAsserted || request.workspaceId !== scope.workspaceId) return scope;
+  return { ...scope, workspaceType: request.workspaceTypeAsserted };
+}
+
+/**
+ * The scope a project-create design-system validation reads the catalog
+ * under: the selection's persisted partition when the client supplied one,
+ * else the request's local attribution. The EXPLICIT type assertion travels
+ * with it — the legacy unattributed personal binding allowance
+ * (`designSystemPersonalBindingReadable`) keys on it — and an unasserted
+ * type stays unasserted.
+ */
+function designSystemCatalogReadScope(
+  catalogScope: LocalCatalogScope | null,
+  request: WorkspaceResourceContext | null,
+): {
+  workspaceId: string | null;
+  workspaceMemberId: string | null;
+  workspaceTypeAsserted: 'personal' | 'team' | null;
+} {
+  if (catalogScope) {
+    return {
+      workspaceId: catalogScope.workspaceId,
+      workspaceMemberId: catalogScope.workspaceMemberId,
+      workspaceTypeAsserted: catalogScope.workspaceType ?? null,
+    };
+  }
+  return {
+    workspaceId: request?.workspaceId ?? null,
+    workspaceMemberId: request?.workspaceMemberId ?? null,
+    workspaceTypeAsserted: request?.workspaceTypeAsserted ?? null,
+  };
+}
+
+/**
+ * The explicit workspace-type assertion to present on behalf of a project's
+ * PERSISTED binding — a lane whose identity comes from the row, not from the
+ * request. Two witnesses, either sufficient: the caller's own assertion when
+ * the request names that same workspace, else what the daemon has learned
+ * about the workspace from exact directory/context reads
+ * (`WorkspaceTypeRegistry`). Silence stays silence (fail-closed).
+ */
+function persistedBindingWorkspaceTypeAssertion(
+  req: unknown,
+  workspaceId: string | null | undefined,
+  workspaceTypes: Pick<WorkspaceTypeRegistry, 'typeOf'> | null | undefined,
+): 'personal' | 'team' | null {
+  if (!workspaceId) return null;
+  const claimed = workspaceProjectContextFromRequest(req);
+  if (
+    claimed
+    && claimed !== 'missing'
+    && claimed.workspaceId === workspaceId
+    && claimed.workspaceTypeAsserted
+  ) {
+    return claimed.workspaceTypeAsserted;
+  }
+  return workspaceTypes?.typeOf(workspaceId) ?? null;
 }
 
 function sameLocalCatalogScopes(left: unknown, right: unknown): boolean {
@@ -3795,9 +3873,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           req.body?.skillCatalogScope,
           'skillCatalogScope',
         );
-        designSystemCatalogScope = parseLocalCatalogScope(
-          req.body?.designSystemCatalogScope,
-          'designSystemCatalogScope',
+        designSystemCatalogScope = withRequestAssertedWorkspaceType(
+          parseLocalCatalogScope(
+            req.body?.designSystemCatalogScope,
+            'designSystemCatalogScope',
+          ),
+          createWorkspace.context,
         );
       } catch (error) {
         return sendApiError(res, 400, 'BAD_REQUEST', String(error));
@@ -3808,7 +3889,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // this local project to that Workspace or prove current membership.
       const designSystemValidation = await validateProjectDesignSystemId(
         designSystemId,
-        designSystemCatalogScope ?? creationWorkspaceScope,
+        designSystemCatalogReadScope(designSystemCatalogScope, createWorkspace.context),
       );
       if (!designSystemValidation.ok) {
         return sendApiError(
@@ -5144,6 +5225,11 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           {
             workspaceId: projectBinding?.workspaceId ?? null,
             workspaceMemberId: projectBinding?.createdByWorkspaceMemberId ?? null,
+            workspaceTypeAsserted: persistedBindingWorkspaceTypeAssertion(
+              req,
+              projectBinding?.workspaceId,
+              workspaceTypes,
+            ),
           },
         );
         if (!designSystemValidation.ok) {

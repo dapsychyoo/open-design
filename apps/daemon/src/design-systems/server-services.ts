@@ -11,7 +11,10 @@ import {
   getWorkspaceResourceByResourceId,
 } from '../db.js';
 import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
-import { isUnattributedLocalPersonalDesignSystemBinding } from '../collab/workspace-resource-mutation.js';
+import {
+  isUnattributedLocalPersonalDesignSystemBinding,
+  unattributedLocalPersonalDesignSystemAllowance,
+} from '../collab/workspace-resource-mutation.js';
 import { workspaceTeamDesignSystemBindingAllowsRead } from './workspace-team-binding.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -99,33 +102,58 @@ export type DesignSystemAssetSyncOutcome =
  * #6763), so the envelope alone must decide for `visibility: 'personal'`
  * systems. Mirrors `skillVisibleFromBinding` in `skills.ts`.
  *
- * A personal binding is readable by its exact recorded creator member — or,
- * when the row is unattributed (see
- * {@link isUnattributedLocalPersonalDesignSystemBinding}), by any member of
- * the same workspace whose scope EXPLICITLY asserts a personal workspace.
+ * This is THE read decision for a `visibility: 'personal'` binding, shared by
+ * the catalog filter, the detail/static read options, project validation
+ * (`validateProjectDesignSystemId`), and run-time prompt loading
+ * (`designSystemVisibleToRun` in server.ts), so no two of them can disagree
+ * about the same row. A personal binding in the scope's workspace is
+ * readable by:
+ *
+ * - its exact recorded creator member;
+ * - any member of that workspace whose scope EXPLICITLY asserts a personal
+ *   workspace, when the row is unattributed
+ *   ({@link unattributedLocalPersonalDesignSystemAllowance});
+ * - a workspace-bound caller with NO member identity of its own, when the
+ *   row is equally unattributed — a legacy memberless project's persisted
+ *   scope may read exactly the unattributed bindings of its own workspace.
+ *
  * An unasserted type is not an assertion — the allowance stays off. This
  * mirrors the projects-layer ruling for memberless legacy rows.
  */
-function designSystemBindingAllowsRead(
+export function designSystemPersonalBindingReadable(
   binding: ReturnType<typeof getWorkspaceResourceByResourceId>,
-  workspaceId: string,
-  workspaceMemberId: string,
-  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null,
+  scope: DesignSystemPersonalBindingScope,
 ): boolean {
   if (
     !binding
-    || binding.workspaceId !== workspaceId
+    || !scope.workspaceId
+    || binding.workspaceId !== scope.workspaceId
     || binding.visibility !== 'personal'
     || binding.resourceState === 'deleted'
   ) {
     return false;
   }
-  if (binding.createdByWorkspaceMemberId === workspaceMemberId) return true;
-  return (
-    workspaceTypeAsserted === 'personal'
-    && isUnattributedLocalPersonalDesignSystemBinding(binding)
+  if (!scope.workspaceMemberId) {
+    return isUnattributedLocalPersonalDesignSystemBinding(binding);
+  }
+  if (binding.createdByWorkspaceMemberId === scope.workspaceMemberId) return true;
+  return unattributedLocalPersonalDesignSystemAllowance(
+    'design_system',
+    binding,
+    scope.workspaceTypeAsserted,
   );
 }
+
+/**
+ * The scope a personal-binding read runs under. `workspaceMemberId` is empty
+ * for a workspace-bound caller with no member identity of its own (the
+ * persisted scope of a legacy memberless project driving a run).
+ */
+export type DesignSystemPersonalBindingScope = {
+  workspaceId: string;
+  workspaceMemberId: string;
+  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
+};
 
 type DesignSystemUserReadScope = {
   workspaceId?: string | null;
@@ -169,8 +197,9 @@ function designSystemUserReadOptions(
       const binding = getWorkspaceResourceByResourceId(db, 'design_system', id);
       if (binding) {
         if (
-          isUnattributedLocalPersonalDesignSystemBinding(binding)
-          && (!workspaceId || binding.workspaceId === workspaceId)
+          workspaceId
+            ? designSystemPersonalBindingReadable(binding, { workspaceId, workspaceMemberId: '' })
+            : isUnattributedLocalPersonalDesignSystemBinding(binding)
         ) {
           return { idPrefix: 'user:' };
         }
@@ -181,7 +210,11 @@ function designSystemUserReadOptions(
   }
   if (!db || !workspaceId || !workspaceMemberId) return metadataGated;
   const binding = getWorkspaceResourceByResourceId(db, 'design_system', id);
-  if (designSystemBindingAllowsRead(binding, workspaceId, workspaceMemberId, scope.workspaceTypeAsserted)) {
+  if (designSystemPersonalBindingReadable(binding, {
+    workspaceId,
+    workspaceMemberId,
+    workspaceTypeAsserted: scope.workspaceTypeAsserted ?? null,
+  })) {
     // Issue #6763: the binding is authoritative even when a re-finalize
     // dropped `workspaceId` from metadata.json — read the FS copy unscoped.
     return { idPrefix: 'user:' };
@@ -537,20 +570,11 @@ export function createDesignSystemServerServices({
         return false;
       }
       const binding = getWorkspaceResourceByResourceId(db, 'design_system', system.id);
-      if (!exactMemberId) {
-        // A workspace-bound caller with NO member identity of its own — a
-        // legacy memberless project driving a run — may read exactly the
-        // resources that are equally unattributed in its own workspace.
-        if (
-          binding?.workspaceId === exactWorkspaceId
-          && isUnattributedLocalPersonalDesignSystemBinding(binding)
-        ) {
-          return true;
-        }
-        logCatalogHide(system.id, scopeLabel, 'memberless scope may only read unattributed bindings of its own workspace');
-        return false;
-      }
-      if (designSystemBindingAllowsRead(binding, exactWorkspaceId, exactMemberId, options.workspaceTypeAsserted)) {
+      if (designSystemPersonalBindingReadable(binding, {
+        workspaceId: exactWorkspaceId,
+        workspaceMemberId: exactMemberId,
+        workspaceTypeAsserted: options.workspaceTypeAsserted ?? null,
+      })) {
         return true;
       }
       logCatalogHide(
@@ -564,9 +588,11 @@ export function createDesignSystemServerServices({
               ? 'binding is tombstoned'
               : binding.visibility !== 'personal'
                 ? 'team-visibility binding requires the Team catalog lane'
-                : isUnattributedLocalPersonalDesignSystemBinding(binding)
-                  ? 'unattributed binding requires an explicitly asserted personal scope'
-                  : 'personal binding belongs to another member',
+                : !exactMemberId
+                  ? 'memberless scope may only read unattributed bindings of its own workspace'
+                  : isUnattributedLocalPersonalDesignSystemBinding(binding)
+                    ? 'unattributed binding requires an explicitly asserted personal scope'
+                    : 'personal binding belongs to another member',
       );
       return false;
     });
@@ -666,6 +692,7 @@ export function createDesignSystemServerServices({
     options: {
       workspaceId?: string | null;
       workspaceMemberId?: string | null;
+      workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
     } = {},
   ) {
     // Product boundary: this validator identifies the item in the daemon's
@@ -762,18 +789,32 @@ export function createDesignSystemServerServices({
     return `${prefix}${suffix}`;
   }
 
+  /**
+   * Is `binding` (the editing project's `workspace_projects` row) the caller's
+   * own, so reopening the editor reuses it instead of forking a
+   * workspace-scoped copy? The design system's editing project inherits the
+   * same ruling as its resource binding: a legacy memberless personal row in
+   * the caller's EXPLICITLY personal workspace is the local user's own
+   * editing project, not another member's — forking it would open an editor
+   * whose edits run-time prompt loading (which reads `summary.projectId`)
+   * never sees.
+   */
   function isExactDesignSystemProjectBinding(
     binding: ReturnType<typeof getWorkspaceProjectByProjectId>,
     summary: DesignSystemSummary,
     workspaceId: string,
     workspaceMemberId: string,
+    workspaceTypeAsserted: DesignSystemWorkspaceScopeType | null,
   ) {
     if (!binding || binding.workspaceId !== workspaceId || binding.resourceState === 'deleted') {
       return false;
     }
     if (summary.teamSynced === true) return binding.visibility === 'team';
     return binding.visibility === 'personal'
-      && binding.createdByWorkspaceMemberId === workspaceMemberId;
+      && (
+        binding.createdByWorkspaceMemberId === workspaceMemberId
+        || unattributedLocalPersonalDesignSystemAllowance('design_system', binding, workspaceTypeAsserted)
+      );
   }
 
   async function resolveDesignSystemWorkspaceProject(
@@ -790,11 +831,13 @@ export function createDesignSystemServerServices({
     // what allowed a Team operation to mutate a same-id Personal project.
     if (isScoped && (!workspaceId || !workspaceMemberId)) return null;
 
+    const workspaceTypeAsserted = options.workspaceTypeAsserted ?? null;
     const systems = await listAllDesignSystems(
       isScoped
         ? {
             workspaceId,
             workspaceMemberId,
+            workspaceTypeAsserted,
             ...(options.exactTeam !== undefined ? { exactTeam: options.exactTeam } : {}),
           }
         : {},
@@ -820,6 +863,7 @@ export function createDesignSystemServerServices({
         summary,
         workspaceId,
         workspaceMemberId,
+        workspaceTypeAsserted,
       );
       if (existing && !exactBinding) {
         projectId = workspaceScopedDesignSystemProjectId(id, workspaceId);
@@ -833,6 +877,7 @@ export function createDesignSystemServerServices({
           summary,
           workspaceId,
           workspaceMemberId,
+          workspaceTypeAsserted,
         )) {
           return null;
         }
