@@ -20,16 +20,19 @@ import type {
 } from '../design-systems/generation-jobs.js';
 import { deleteWorkspaceResourceByResourceId, type openDatabase } from '../db.js';
 import {
-  assertedWorkspaceScopeType,
   enforceVerifiedWorkspaceResourceMutation,
   enforceVerifiedWorkspaceResourceRead,
   headerValue,
+  isUnattributedLocalPersonalDesignSystemBinding,
   requestWithWorkspaceNavigationScope,
   resolveOptionalLocalWorkspaceRequestAuthority,
   unattributedLocalPersonalDesignSystemAllowance,
+  verifiedWorkspaceTypeAssertion,
   type VerifyWorkspaceRequestAuthority,
   type WorkspaceResourceAccessInput,
+  type WorkspaceTypeWitness,
 } from '../collab/workspace-resource-mutation.js';
+import type { WorkspaceTypeRegistry } from '../collab/team-share-scope.js';
 import type { Project, ProjectFile } from '@open-design/contracts';
 
 type DbHandle = ReturnType<typeof openDatabase>;
@@ -47,6 +50,14 @@ const PACKAGED_SHOWCASE_PATH = 'system/kit.html';
 
 export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths' | 'projectFiles' | 'projectStore'> {
   verifyWorkspaceRequestAuthority: VerifyWorkspaceRequestAuthority;
+  /**
+   * Settled, TTL-bounded authority. Only the witness behind the legacy local
+   * personal design-system allowance consults it, and only for a workspace
+   * the daemon has not already learned from the directory.
+   */
+  verifyWorkspaceReadAuthority?: VerifyWorkspaceRequestAuthority;
+  /** The daemon's memo of directory-established workspace types (verified tier only). */
+  workspaceTypes?: Pick<WorkspaceTypeRegistry, 'verifiedTypeOf'>;
   workspaceResources: {
     getWorkspaceResource: (
       db: DbHandle,
@@ -94,14 +105,14 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
       options?: {
         workspaceId?: string | null;
         workspaceMemberId?: string | null;
-        workspaceTypeAsserted?: 'personal' | 'team' | null;
+        workspaceTypeVerified?: 'personal' | 'team' | null;
         exactTeam?: boolean;
       },
     ) => Promise<DesignSystemWorkspaceProject | null>;
     listAllDesignSystems: (options?: {
       workspaceId?: string | null;
       workspaceMemberId?: string | null;
-      workspaceTypeAsserted?: 'personal' | 'team' | null;
+      workspaceTypeVerified?: 'personal' | 'team' | null;
       exactTeam?: boolean;
     }) => Promise<AvailableDesignSystemSummary[]>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<DesignSystemFileSummary[] | null>;
@@ -109,16 +120,16 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     prepareDesignTokenContractRebuild: (root: string, id: string, options?: { force?: boolean }) => Promise<DesignTokenContractRebuildPreparation>;
     readAvailableDesignSystem: (
       id: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeAsserted?: 'personal' | 'team' | null; exactTeam?: boolean },
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeVerified?: 'personal' | 'team' | null; exactTeam?: boolean },
     ) => Promise<string | null>;
     readAvailableDesignSystemPackageInfo: (
       id: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeAsserted?: 'personal' | 'team' | null; exactTeam?: boolean },
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeVerified?: 'personal' | 'team' | null; exactTeam?: boolean },
     ) => Promise<DesignSystemPackageInfo | null>;
     readAvailableDesignSystemStaticFile: (
       id: string,
       filePath: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeAsserted?: 'personal' | 'team' | null; exactTeam?: boolean },
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null; workspaceTypeVerified?: 'personal' | 'team' | null; exactTeam?: boolean },
     ) => Promise<{
       bytes: Buffer;
       contentType: string;
@@ -142,7 +153,7 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
       options?: {
         workspaceId?: string | null;
         workspaceMemberId?: string | null;
-        workspaceTypeAsserted?: 'personal' | 'team' | null;
+        workspaceTypeVerified?: 'personal' | 'team' | null;
         exactTeam?: boolean;
       },
     ) => Promise<{ ok: true; synced: string[] } | { ok: false; reason: 'not-found' | 'no-workspace-project' }>;
@@ -255,25 +266,47 @@ export function registerDesignSystemRoutes(
     resourceId,
   );
 
+  // The witness behind the legacy local personal design-system allowance:
+  // the directory-established type memo, else the settled read authority (the
+  // membership directory in the packaged runtime, the explicit headers in
+  // local/dev). Never the fresh mutation verifier: a workspace's type does not
+  // change, and this lane must not add a directory round trip to every
+  // mutation of an attributed system.
+  const workspaceTypeWitness: WorkspaceTypeWitness = {
+    verifiedTypeOf: ctx.workspaceTypes?.verifiedTypeOf,
+    verify: ctx.verifyWorkspaceReadAuthority ?? ctx.verifyWorkspaceRequestAuthority,
+  };
+
   /**
-   * The caller's EXPLICIT Workspace-type assertion, or null when nothing was
-   * asserted — never the normalized `workspaceType`, which collapses a
-   * missing header to `'personal'` and would hand the personal-only legacy
-   * allowance (`isUnattributedLocalPersonalDesignSystemBinding`) to a Team
-   * caller that omits the optional header. Navigation transports (iframe/img
-   * URLs) cannot attach headers, so routes that accept the query identity
-   * pair accept the same explicit assertion from the query.
+   * The caller's EXPLICIT Workspace-type assertion CONFIRMED by membership
+   * verification (`verifiedWorkspaceTypeAssertion`), or null when nothing
+   * was asserted or the assertion could not be confirmed — never the
+   * normalized `workspaceType`, which collapses a missing header to
+   * `'personal'` and would hand the personal-only legacy allowance
+   * (`unattributedLocalPersonalDesignSystemAllowance`) to a Team caller that
+   * omits the optional header; and never the raw claim, which would hand it
+   * to a Team member asserting `personal` inside their Team workspace.
+   * Navigation transports (iframe/img URLs) cannot attach headers, so routes
+   * that accept the query identity pair confirm the same assertion from the
+   * query.
+   *
+   * Consulted only when `id`'s own binding is an unattributed personal row —
+   * the one shape the allowance can grant — so an attributed or unbound
+   * system never triggers verification on this local data-plane lane.
    */
-  function requestAssertedWorkspaceScopeType(
+  async function requestVerifiedWorkspaceType(
     req: any,
+    id: string,
     allowNavigationQuery = false,
-  ): 'personal' | 'team' | null {
-    const asserted = assertedWorkspaceScopeType(req);
-    if (asserted || !allowNavigationQuery) return asserted;
-    const queryType = typeof req.query?.workspaceType === 'string'
-      ? req.query.workspaceType
-      : '';
-    return queryType === 'personal' || queryType === 'team' ? queryType : null;
+  ): Promise<'personal' | 'team' | null> {
+    if (!isUnattributedLocalPersonalDesignSystemBinding(getDesignSystemBinding(db, id))) {
+      return null;
+    }
+    const scopedRequest = allowNavigationQuery
+      ? requestWithWorkspaceNavigationScope(req)
+      : req;
+    if (scopedRequest === 'conflict') return null;
+    return verifiedWorkspaceTypeAssertion(scopedRequest, workspaceTypeWitness);
   }
 
   function resolveDesignSystemStorage(
@@ -359,14 +392,19 @@ export function registerDesignSystemRoutes(
           workspaceId: resolution.context.workspaceId,
         })).some((system) => system.id === id && system.source === 'built-in')
       : false;
+    // Only an unattributed personal row can take the legacy allowance, so
+    // only that shape consults the witness (see `requestVerifiedWorkspaceType`).
+    const workspaceTypeVerified = isUnattributedLocalPersonalDesignSystemBinding(binding)
+      ? await verifiedWorkspaceTypeAssertion(scopedRequest, workspaceTypeWitness)
+      : null;
     // Explicit Workspace requests never inherit ownerless legacy resources.
     // A Personal design system is private to its exact persisted creator even
     // when the caller is an owner/admin in the same Workspace. Team resources
     // remain readable by every verified active member through the shared
     // gate. The one exception is an unattributed local personal binding read
-    // from a non-team scope: it records no creator at all (the startup
-    // backfill's output on a never-signed-in install) and belongs to the
-    // local user — see `isUnattributedLocalPersonalDesignSystemBinding`.
+    // from a VERIFIED personal scope: it records no creator at all (the
+    // startup backfill's output on a never-signed-in install) and belongs to
+    // the local user — see `unattributedLocalPersonalDesignSystemAllowance`.
     if (resolution.context && (
       (!binding && !isPublicBuiltIn)
       || (
@@ -376,7 +414,7 @@ export function registerDesignSystemRoutes(
         && !unattributedLocalPersonalDesignSystemAllowance(
           'design_system',
           binding,
-          assertedWorkspaceScopeType(scopedRequest),
+          workspaceTypeVerified,
         )
       )
     )) {
@@ -406,7 +444,7 @@ export function registerDesignSystemRoutes(
       resolution.context
         ? async () => ({ ok: true as const, context: resolution.context! })
         : ctx.verifyWorkspaceRequestAuthority,
-      { allowNavigationQuery },
+      { allowNavigationQuery, workspaceTypeVerified },
     );
   }
 
@@ -449,11 +487,14 @@ export function registerDesignSystemRoutes(
       }
     }
     // Mirror `authorizeDesignSystemRead`: an unattributed local personal
-    // binding reached from an explicitly personal scope is the local user's
-    // own (`unattributedLocalPersonalDesignSystemAllowance`), so the UI's
+    // binding reached from a VERIFIED personal scope is the local user's own
+    // (`unattributedLocalPersonalDesignSystemAllowance`), so the UI's
     // Publish/Edit/Delete controls — enabled by that read's `canMutate` — are
     // backed by a mutation gate that accepts the same scope. The verified
-    // gate below applies the same allowance.
+    // gate below applies the same allowance on the same witness.
+    const workspaceTypeVerified = isUnattributedLocalPersonalDesignSystemBinding(binding)
+      ? await verifiedWorkspaceTypeAssertion(req, workspaceTypeWitness)
+      : null;
     if (resolution.context && (
       !binding
       || (
@@ -462,7 +503,7 @@ export function registerDesignSystemRoutes(
         && !unattributedLocalPersonalDesignSystemAllowance(
           'design_system',
           binding,
-          assertedWorkspaceScopeType(req),
+          workspaceTypeVerified,
         )
       )
     )) {
@@ -493,6 +534,7 @@ export function registerDesignSystemRoutes(
       resolution.context
         ? async () => ({ ok: true as const, context: resolution.context! })
         : ctx.verifyWorkspaceRequestAuthority,
+      { workspaceTypeVerified },
     );
   }
 
@@ -709,12 +751,12 @@ export function registerDesignSystemRoutes(
       if (!(await authorizeDesignSystemRead(req, res, req.params.id))) return;
       const workspaceId = headerValue(req, 'x-od-workspace-id');
       const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
-      const workspaceTypeAsserted = requestAssertedWorkspaceScopeType(req);
+      const workspaceTypeVerified = await requestVerifiedWorkspaceType(req, req.params.id);
       const storage = resolveDesignSystemStorage(req, req.params.id);
       const systems = await listAllDesignSystems({
         workspaceId,
         workspaceMemberId,
-        workspaceTypeAsserted,
+        workspaceTypeVerified,
         exactTeam: storage.exactTeam,
       });
       const summary = systems.find((s) => s.id === req.params.id);
@@ -722,7 +764,7 @@ export function registerDesignSystemRoutes(
       const body = projectBody ?? await readAvailableDesignSystem(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceTypeAsserted,
+        workspaceTypeVerified,
         exactTeam: storage.exactTeam,
       });
       if (body === null || !summary) {
@@ -731,7 +773,7 @@ export function registerDesignSystemRoutes(
       const packageInfo = await readAvailableDesignSystemPackageInfo(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceTypeAsserted,
+        workspaceTypeVerified,
         exactTeam: storage.exactTeam,
       });
       // recvqb6mfyqXLD: mirror the exact PATCH/DELETE verdict onto the read
@@ -770,7 +812,7 @@ export function registerDesignSystemRoutes(
       const body = await readAvailableDesignSystem(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true),
+        workspaceTypeVerified: await requestVerifiedWorkspaceType(req, req.params.id, true),
         exactTeam: storage.exactTeam,
       });
       if (body === null) return res.status(404).type('text/plain').send('not found');
@@ -796,7 +838,7 @@ export function registerDesignSystemRoutes(
       const packaged = await readAvailableDesignSystemStaticFile(
         req.params.id,
         PACKAGED_SHOWCASE_PATH,
-        { workspaceId, workspaceMemberId, workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true), exactTeam: storage.exactTeam },
+        { workspaceId, workspaceMemberId, workspaceTypeVerified: await requestVerifiedWorkspaceType(req, req.params.id, true), exactTeam: storage.exactTeam },
       );
       if (packaged?.contentType.startsWith('text/html')) {
         const workspaceQuery = designSystemNavigationWorkspaceQuery(req);
@@ -814,7 +856,7 @@ export function registerDesignSystemRoutes(
       const body = await readAvailableDesignSystem(req.params.id, {
         workspaceId,
         workspaceMemberId,
-        workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true),
+        workspaceTypeVerified: await requestVerifiedWorkspaceType(req, req.params.id, true),
         exactTeam: storage.exactTeam,
       });
       if (body === null) return res.status(404).type('text/plain').send('not found');
@@ -841,7 +883,7 @@ export function registerDesignSystemRoutes(
       const file = await readAvailableDesignSystemStaticFile(
         req.params.id,
         requestedPath,
-        { workspaceId, workspaceMemberId, workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req, true), exactTeam: storage.exactTeam },
+        { workspaceId, workspaceMemberId, workspaceTypeVerified: await requestVerifiedWorkspaceType(req, req.params.id, true), exactTeam: storage.exactTeam },
       );
       if (!file) return res.status(404).type('text/plain').send('not found');
       res.setHeader('Cache-Control', 'no-store');
@@ -865,7 +907,7 @@ export function registerDesignSystemRoutes(
           ? {
               workspaceId,
               workspaceMemberId,
-              workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req),
+              workspaceTypeVerified: await requestVerifiedWorkspaceType(req, req.params.id),
               exactTeam: storage.exactTeam,
             }
           : undefined,
@@ -986,7 +1028,7 @@ export function registerDesignSystemRoutes(
           ? {
               workspaceId,
               workspaceMemberId,
-              workspaceTypeAsserted: requestAssertedWorkspaceScopeType(req),
+              workspaceTypeVerified: await requestVerifiedWorkspaceType(req, req.params.id),
               exactTeam: storage.exactTeam,
             }
           : undefined,

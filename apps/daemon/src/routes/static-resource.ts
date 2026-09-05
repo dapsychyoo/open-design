@@ -31,12 +31,14 @@ import {
   getWorkspaceResourceByResourceId,
 } from '../db.js';
 import {
-  assertedWorkspaceScopeType,
   enforceVerifiedWorkspaceResourceMutation,
   resolveOptionalLocalWorkspaceRequestAuthority,
+  settledWorkspaceTypeAssertion,
   unattributedLocalPersonalDesignSystemAllowance,
+  verifiedWorkspaceTypeAssertion,
   type VerifyWorkspaceRequestAuthority,
 } from '../collab/workspace-resource-mutation.js';
+import type { WorkspaceTypeRegistry } from '../collab/team-share-scope.js';
 import { listCodexPets, readCodexPetSpritesheet } from '../codex-pets.js';
 import { syncCommunityPets } from '../community-pets-sync.js';
 import {
@@ -79,6 +81,12 @@ export interface RegisterStaticResourceRoutesDeps extends RouteDeps<'db' | 'http
   verifyWorkspaceReadAuthority?: VerifyWorkspaceRequestAuthority;
   /** Fresh authority for mutations, materialization, and detail reads. */
   verifyWorkspaceRequestAuthority?: VerifyWorkspaceRequestAuthority;
+  /**
+   * The daemon's memo of directory-established workspace types (verified
+   * tier only) — the first witness behind the legacy local personal
+   * design-system allowance in the catalog.
+   */
+  workspaceTypes?: Pick<WorkspaceTypeRegistry, 'verifiedTypeOf'>;
   tokenContractRebuild?: {
     maybeStartForImportedDesignSystem?: (
       designSystemId: string,
@@ -813,14 +821,27 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
         ?? (catalogAuthority ? null : (await resolveWorkspaceScope?.(req)) ?? null);
       const workspaceMemberId = workspaceContext?.workspaceMemberId ?? null;
       // The legacy unattributed-binding allowance keys on the caller's
-      // EXPLICIT type assertion, never the verified context's normalized
-      // `workspaceType` (a missing header normalizes to 'personal').
-      const workspaceTypeAsserted = assertedWorkspaceScopeType(req);
+      // explicit type assertion CONFIRMED by membership verification — the
+      // daemon's directory memo first, else the same settled authority this
+      // catalog resolves identity through. Never the raw claim (a Team
+      // member can send `personal`), and never the verified context's
+      // normalized `workspaceType` (a missing header normalizes to 'personal').
+      // Handed to the catalog as a resolver: a local catalog read stays off
+      // the authority plane unless an unattributed personal binding of this
+      // workspace is actually in the list.
+      const workspaceTypeWitness = settledWorkspaceTypeAssertion(() =>
+        verifiedWorkspaceTypeAssertion(req, {
+          verifiedTypeOf: ctx.workspaceTypes?.verifiedTypeOf,
+          verify: catalogAuthority,
+        }));
       const catalog = await listAllDesignSystems({
         workspaceId,
         workspaceMemberId,
-        workspaceTypeAsserted,
+        workspaceTypeVerified: workspaceTypeWitness.resolve,
       });
+      // What the catalog established, if it needed to; the duplicate filter
+      // below can only ever see the systems the catalog already admitted.
+      const workspaceTypeVerified = workspaceTypeWitness.settled() ?? null;
       const visibleSystems = workspaceId && workspaceMemberId
         ? catalog.filter((system) => {
             if (system.source !== 'user') return true;
@@ -848,7 +869,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
                 || unattributedLocalPersonalDesignSystemAllowance(
                   'design_system',
                   personalBinding,
-                  workspaceTypeAsserted,
+                  workspaceTypeVerified,
                 ));
           })
         : catalog;

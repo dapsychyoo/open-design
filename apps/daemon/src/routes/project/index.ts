@@ -131,10 +131,14 @@ import {
   workspaceResourceContext as workspaceProjectContext,
   workspaceResourceContextFromRequest as workspaceProjectContextFromRequest,
   workspaceResourceContextFromVerified,
+  settledWorkspaceTypeAssertion,
+  verifiedWorkspaceTypeAssertion,
+  workspaceScopeRequest,
   type VerifyWorkspaceRequestAuthority,
   type WorkspaceResourceAccessInput,
   type WorkspaceResourceContext,
   type WorkspaceResourceMutationCapability,
+  type WorkspaceTypeWitness,
 } from '../../collab/workspace-resource-mutation.js';
 import {
   resolveLocalProjectWorkspaceScope,
@@ -270,63 +274,85 @@ function parseLocalCatalogScope(value: unknown, field: string): LocalCatalogScop
 }
 
 /**
- * A selection partition that carries no type assertion of its own (an older
- * composer draft) inherits the request's, when the request names that same
- * workspace: both are the same client's claim about the same partition, and
- * the persisted provenance must carry what run-time prompt loading keys on.
- */
-function withRequestAssertedWorkspaceType(
-  scope: LocalCatalogScope | null,
-  request: WorkspaceResourceContext | null,
-): LocalCatalogScope | null {
-  if (!scope || scope.workspaceType) return scope;
-  if (!request?.workspaceTypeAsserted || request.workspaceId !== scope.workspaceId) return scope;
-  return { ...scope, workspaceType: request.workspaceTypeAsserted };
-}
-
-/**
  * The scope a project-create design-system validation reads the catalog
  * under: the selection's persisted partition when the client supplied one,
- * else the request's local attribution. The EXPLICIT type assertion travels
- * with it — the legacy unattributed personal binding allowance
- * (`designSystemPersonalBindingReadable`) keys on it — and an unasserted
- * type stays unasserted.
+ * else the request's local attribution. The partition's type travels with it
+ * only once membership verification has CONFIRMED it
+ * (`verifiedWorkspaceTypeAssertion`): the legacy unattributed personal
+ * binding allowance (`designSystemPersonalBindingReadable`) keys on a
+ * verified personal workspace, never on the client's claim. A partition that
+ * carries no type of its own (an older composer draft) inherits the request's
+ * assertion when the request names that same workspace, and the inherited
+ * assertion goes through the same confirmation. An unasserted or unconfirmed
+ * type stays unasserted (fail-closed).
+ *
+ * The confirmation is handed to the validator as a resolver it settles only
+ * when the selected system's binding is an unattributed personal row, so a
+ * Send that selects an attributed or built-in system never touches the
+ * authority plane; `settledWorkspaceType` reads back what was established.
  */
 function designSystemCatalogReadScope(
   catalogScope: LocalCatalogScope | null,
   request: WorkspaceResourceContext | null,
+  req: unknown,
+  witness: WorkspaceTypeWitness,
 ): {
-  workspaceId: string | null;
-  workspaceMemberId: string | null;
-  workspaceTypeAsserted: 'personal' | 'team' | null;
+  scope: {
+    workspaceId: string | null;
+    workspaceMemberId: string | null;
+    workspaceTypeVerified: (() => Promise<'personal' | 'team' | null>) | null;
+  };
+  settledWorkspaceType: () => 'personal' | 'team' | null | undefined;
 } {
   if (catalogScope) {
+    const claimed = catalogScope.workspaceType
+      ?? (request?.workspaceId === catalogScope.workspaceId
+        ? request.workspaceTypeAsserted
+        : null);
+    const confirmation = claimed
+      ? settledWorkspaceTypeAssertion(() => verifiedWorkspaceTypeAssertion(
+          workspaceScopeRequest({ ...catalogScope, workspaceType: claimed }),
+          witness,
+        ))
+      : null;
     return {
-      workspaceId: catalogScope.workspaceId,
-      workspaceMemberId: catalogScope.workspaceMemberId,
-      workspaceTypeAsserted: catalogScope.workspaceType ?? null,
+      scope: {
+        workspaceId: catalogScope.workspaceId,
+        workspaceMemberId: catalogScope.workspaceMemberId,
+        workspaceTypeVerified: confirmation?.resolve ?? null,
+      },
+      settledWorkspaceType: () => confirmation?.settled(),
     };
   }
+  const confirmation = request?.workspaceTypeAsserted
+    ? settledWorkspaceTypeAssertion(() => verifiedWorkspaceTypeAssertion(req, witness))
+    : null;
   return {
-    workspaceId: request?.workspaceId ?? null,
-    workspaceMemberId: request?.workspaceMemberId ?? null,
-    workspaceTypeAsserted: request?.workspaceTypeAsserted ?? null,
+    scope: {
+      workspaceId: request?.workspaceId ?? null,
+      workspaceMemberId: request?.workspaceMemberId ?? null,
+      workspaceTypeVerified: confirmation?.resolve ?? null,
+    },
+    settledWorkspaceType: () => confirmation?.settled(),
   };
 }
 
 /**
- * The explicit workspace-type assertion to present on behalf of a project's
- * PERSISTED binding — a lane whose identity comes from the row, not from the
- * request. Two witnesses, either sufficient: the caller's own assertion when
- * the request names that same workspace, else what the daemon has learned
- * about the workspace from exact directory/context reads
- * (`WorkspaceTypeRegistry`). Silence stays silence (fail-closed).
+ * The verified workspace type to present on behalf of a project's PERSISTED
+ * binding — a lane whose identity comes from the row, not from the request.
+ * Two witnesses, either sufficient, neither a bare claim: the caller's own
+ * assertion when the request names that same workspace, confirmed through
+ * membership verification; else what the membership directory has
+ * established about the workspace (`WorkspaceTypeRegistry.verifiedTypeOf` —
+ * never the claim tier a project route learns from raw headers). Silence
+ * stays silence (fail-closed). Settled lazily, like
+ * `designSystemCatalogReadScope`.
  */
-function persistedBindingWorkspaceTypeAssertion(
+function persistedBindingWorkspaceTypeWitness(
   req: unknown,
   workspaceId: string | null | undefined,
-  workspaceTypes: Pick<WorkspaceTypeRegistry, 'typeOf'> | null | undefined,
-): 'personal' | 'team' | null {
+  witness: WorkspaceTypeWitness,
+): ReturnType<typeof settledWorkspaceTypeAssertion> | null {
   if (!workspaceId) return null;
   const claimed = workspaceProjectContextFromRequest(req);
   if (
@@ -335,9 +361,10 @@ function persistedBindingWorkspaceTypeAssertion(
     && claimed.workspaceId === workspaceId
     && claimed.workspaceTypeAsserted
   ) {
-    return claimed.workspaceTypeAsserted;
+    return settledWorkspaceTypeAssertion(() => verifiedWorkspaceTypeAssertion(req, witness));
   }
-  return workspaceTypes?.typeOf(workspaceId) ?? null;
+  const established = witness.verifiedTypeOf?.(workspaceId) ?? null;
+  return established ? settledWorkspaceTypeAssertion(async () => established) : null;
 }
 
 function sameLocalCatalogScopes(left: unknown, right: unknown): boolean {
@@ -441,7 +468,7 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
    * team share aimed at a personal workspace even when the caller's headers say
    * otherwise. See `collab/team-share-scope.ts`.
    */
-  workspaceTypes?: Pick<WorkspaceTypeRegistry, 'isKnownPersonal' | 'learn' | 'typeOf'>;
+  workspaceTypes?: Pick<WorkspaceTypeRegistry, 'isKnownPersonal' | 'learn' | 'typeOf' | 'verifiedTypeOf'>;
 }
 
 // `WorkspaceProjectContext`/`WorkspaceProjectMutationCapability`/
@@ -2157,6 +2184,16 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   };
   const verifyWorkspaceProjectReadAuthority =
     ctx.verifyWorkspaceReadAuthority ?? ctx.verifyWorkspaceRequestAuthority;
+  // The witness behind the legacy local personal design-system allowance in
+  // project validation: the directory-established type memo, else the settled
+  // read authority (the membership directory in the packaged runtime, the
+  // explicit headers in local/dev). Consulted only for a design-system
+  // selection that claims a workspace type the daemon has not yet learned —
+  // ordinary Send keeps its no-network shape.
+  const designSystemWorkspaceTypeWitness: WorkspaceTypeWitness = {
+    verifiedTypeOf: workspaceTypes?.verifiedTypeOf,
+    verify: verifyWorkspaceProjectReadAuthority,
+  };
   const authorizeProjectRequest =
     ctx.authorizeProjectRequest ??
     createAuthorizeProjectRequest({
@@ -3873,12 +3910,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           req.body?.skillCatalogScope,
           'skillCatalogScope',
         );
-        designSystemCatalogScope = withRequestAssertedWorkspaceType(
-          parseLocalCatalogScope(
-            req.body?.designSystemCatalogScope,
-            'designSystemCatalogScope',
-          ),
-          createWorkspace.context,
+        designSystemCatalogScope = parseLocalCatalogScope(
+          req.body?.designSystemCatalogScope,
+          'designSystemCatalogScope',
         );
       } catch (error) {
         return sendApiError(res, 400, 'BAD_REQUEST', String(error));
@@ -3887,9 +3921,15 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // snapshot while a Workspace switch is loading. Use the partition that
       // produced that exact selection for local lookup only. It does not bind
       // this local project to that Workspace or prove current membership.
+      const designSystemReadScope = designSystemCatalogReadScope(
+        designSystemCatalogScope,
+        createWorkspace.context,
+        req,
+        designSystemWorkspaceTypeWitness,
+      );
       const designSystemValidation = await validateProjectDesignSystemId(
         designSystemId,
-        designSystemCatalogReadScope(designSystemCatalogScope, createWorkspace.context),
+        designSystemReadScope.scope,
       );
       if (!designSystemValidation.ok) {
         return sendApiError(
@@ -3900,6 +3940,18 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         );
       }
       const normalizedDesignSystemId = designSystemValidation.id;
+      // Persist the partition with the type membership verification
+      // confirmed, when the selection needed that witness at all — never the
+      // client's raw claim, which run-time prompt loading would otherwise
+      // take as a verified witness.
+      if (designSystemCatalogScope) {
+        const { workspaceType: _claimedWorkspaceType, ...partition } = designSystemCatalogScope;
+        const workspaceTypeVerified = designSystemReadScope.settledWorkspaceType();
+        designSystemCatalogScope = {
+          ...partition,
+          ...(workspaceTypeVerified ? { workspaceType: workspaceTypeVerified } : {}),
+        };
+      }
       const skillValidation = await validateProjectSkillId(
         skillId,
         skillCatalogScope ?? creationWorkspaceScope,
@@ -5218,18 +5270,24 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       if (typeof patch.customInstructions === 'string' && patch.customInstructions.length > 5000) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'customInstructions exceeds 5 000 character limit');
       }
+      // The partition a PATCH-selected design system was validated under,
+      // when the project's own binding can name it. Run-time prompt loading
+      // reads the verified type back from the persisted partition
+      // (`LocalCatalogScope.workspaceType`), where no request headers exist.
+      let designSystemSelectionScope: LocalCatalogScope | null = null;
       if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId')) {
         const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id);
+        const bindingWorkspaceTypeWitness = persistedBindingWorkspaceTypeWitness(
+          req,
+          projectBinding?.workspaceId,
+          designSystemWorkspaceTypeWitness,
+        );
         const designSystemValidation = await validateProjectDesignSystemId(
           patch.designSystemId,
           {
             workspaceId: projectBinding?.workspaceId ?? null,
             workspaceMemberId: projectBinding?.createdByWorkspaceMemberId ?? null,
-            workspaceTypeAsserted: persistedBindingWorkspaceTypeAssertion(
-              req,
-              projectBinding?.workspaceId,
-              workspaceTypes,
-            ),
+            workspaceTypeVerified: bindingWorkspaceTypeWitness?.resolve ?? null,
           },
         );
         if (!designSystemValidation.ok) {
@@ -5241,6 +5299,18 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           );
         }
         patch.designSystemId = designSystemValidation.id;
+        const bindingWorkspaceTypeVerified = bindingWorkspaceTypeWitness?.settled() ?? null;
+        designSystemSelectionScope =
+          designSystemValidation.id
+          && projectBinding?.workspaceId
+          && projectBinding.createdByWorkspaceMemberId
+          && bindingWorkspaceTypeVerified
+            ? {
+                workspaceId: projectBinding.workspaceId,
+                workspaceMemberId: projectBinding.createdByWorkspaceMemberId,
+                workspaceType: bindingWorkspaceTypeVerified,
+              }
+            : null;
       }
       if (Object.prototype.hasOwnProperty.call(patch, 'skillId')) {
         const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id);
@@ -5266,18 +5336,23 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           ? patch.metadata
           : patchProject.metadata;
         const currentScopes = currentMetadata?.localCatalogScopes;
-        if (currentScopes) {
-          const nextScopes = { ...currentScopes };
+        const designSystemChanged =
+          Object.prototype.hasOwnProperty.call(patch, 'designSystemId')
+          && patch.designSystemId !== patchProject.designSystemId;
+        if (currentScopes || (designSystemChanged && designSystemSelectionScope)) {
+          const nextScopes = { ...(currentScopes ?? {}) };
           if (
             Object.prototype.hasOwnProperty.call(patch, 'skillId')
             && patch.skillId !== patchProject.skillId
           ) delete nextScopes.skill;
-          if (
-            Object.prototype.hasOwnProperty.call(patch, 'designSystemId')
-            && patch.designSystemId !== patchProject.designSystemId
-          ) delete nextScopes.designSystem;
+          if (designSystemChanged) {
+            delete nextScopes.designSystem;
+            if (designSystemSelectionScope) {
+              nextScopes.designSystem = designSystemSelectionScope;
+            }
+          }
           const { localCatalogScopes: _localCatalogScopes, ...metadataWithoutScopes } =
-            currentMetadata;
+            currentMetadata ?? {};
           patch.metadata = Object.keys(nextScopes).length > 0
             ? { ...metadataWithoutScopes, localCatalogScopes: nextScopes }
             : metadataWithoutScopes;

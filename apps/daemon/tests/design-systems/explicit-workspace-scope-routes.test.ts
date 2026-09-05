@@ -524,9 +524,11 @@ describe('design-system explicit Workspace request scope', () => {
     expect(listAllDesignSystems).toHaveBeenCalledWith({
       workspaceId: 'workspace-a',
       workspaceMemberId: null,
-      // The route threads the caller's EXPLICIT type assertion (the fixture
-      // headers assert `team`), never a normalized fallback.
-      workspaceTypeAsserted: 'team',
+      // The route hands the catalog a resolver for the caller's EXPLICIT
+      // type assertion, which the catalog settles only when an unattributed
+      // personal binding is in the list — never a normalized fallback, and
+      // never a value read off the raw header.
+      workspaceTypeVerified: expect.any(Function),
     });
   });
 

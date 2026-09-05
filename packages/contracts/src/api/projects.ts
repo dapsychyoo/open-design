@@ -165,12 +165,14 @@ export interface LocalCatalogScope {
   workspaceId: string;
   workspaceMemberId: string;
   /**
-   * The workspace type the selecting client asserted for that partition (the
-   * same `x-od-workspace-type` its catalog reads carry). Daemon gates that
-   * key on the caller's explicit assertion — the legacy unattributed local
-   * personal design-system allowance — must see it again on project creation
-   * and at run time, where no request headers exist. Optional: an older
-   * draft without it stays unasserted.
+   * The workspace type of that partition. A client sends the type it asserts
+   * (the same `x-od-workspace-type` its catalog reads carry); the daemon
+   * persists it only once its membership verification has confirmed it at
+   * selection time, and drops a claim it cannot confirm. Daemon gates that
+   * key on a verified personal workspace — the legacy unattributed local
+   * personal design-system allowance — read the persisted value again at run
+   * time, where no request headers exist. Optional: an older draft without it
+   * stays unasserted.
    */
   workspaceType?: WorkspaceType;
 }

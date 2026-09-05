@@ -71,21 +71,43 @@ type DesignSystemListOptions = {
 };
 
 /**
- * The caller's EXPLICIT Workspace-type assertion (the raw
- * `x-od-workspace-type` claim, `assertedWorkspaceScopeType` in
- * collab/workspace-resource-mutation.ts) — never the normalized
- * `workspaceType`, which collapses a missing header to `'personal'`. Gates
- * below grant the legacy unattributed-binding allowance only on an explicit
- * `'personal'` assertion, so a caller that omits the optional header — or a
- * lane that never threads the assertion — stays on the strict pre-existing
- * behavior (fail-closed).
+ * The caller's EXPLICIT Workspace-type assertion CONFIRMED by membership
+ * verification (`verifiedWorkspaceTypeAssertion` in
+ * collab/workspace-resource-mutation.ts) — never the raw
+ * `x-od-workspace-type` claim, and never the normalized `workspaceType`,
+ * which collapses a missing header to `'personal'`. Gates below grant the
+ * legacy unattributed-binding allowance only on a verified `'personal'`
+ * workspace, so a caller that omits the optional header, a caller whose claim
+ * the membership directory contradicts, or a lane that never threads the
+ * witness stays on the strict pre-existing behavior (fail-closed).
  */
 type DesignSystemWorkspaceScopeType = 'personal' | 'team';
+
+/**
+ * How a lane hands the verified type to the catalog: as a settled value, or
+ * as a resolver the catalog invokes only when the decision actually needs it
+ * — an unattributed personal binding is in the caller's workspace. The
+ * witness behind a resolver may consult the daemon's request verifier (the
+ * membership directory in the packaged runtime), and a local catalog read
+ * must stay off that plane unless a legacy row demands it.
+ */
+export type DesignSystemWorkspaceTypeVerifiedInput =
+  | DesignSystemWorkspaceScopeType
+  | null
+  | (() => Promise<DesignSystemWorkspaceScopeType | null>);
+
+async function resolveWorkspaceTypeVerified(
+  input: DesignSystemWorkspaceTypeVerifiedInput | undefined,
+  needed: () => boolean,
+): Promise<DesignSystemWorkspaceScopeType | null> {
+  if (typeof input !== 'function') return input ?? null;
+  return needed() ? await input() : null;
+}
 
 type DesignSystemWorkspaceOptions = {
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
-  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
+  workspaceTypeVerified?: DesignSystemWorkspaceScopeType | null;
   /** A verified Team binding forbids same-id Personal fallback. */
   exactTeam?: boolean;
 };
@@ -110,15 +132,15 @@ export type DesignSystemAssetSyncOutcome =
  * readable by:
  *
  * - its exact recorded creator member;
- * - any member of that workspace whose scope EXPLICITLY asserts a personal
- *   workspace, when the row is unattributed
+ * - any member of that workspace whose explicit personal assertion membership
+ *   verification confirmed, when the row is unattributed
  *   ({@link unattributedLocalPersonalDesignSystemAllowance});
  * - a workspace-bound caller with NO member identity of its own, when the
  *   row is equally unattributed — a legacy memberless project's persisted
  *   scope may read exactly the unattributed bindings of its own workspace.
  *
- * An unasserted type is not an assertion — the allowance stays off. This
- * mirrors the projects-layer ruling for memberless legacy rows.
+ * An unasserted or unconfirmed type is not a witness — the allowance stays
+ * off. This mirrors the projects-layer ruling for memberless legacy rows.
  */
 export function designSystemPersonalBindingReadable(
   binding: ReturnType<typeof getWorkspaceResourceByResourceId>,
@@ -140,7 +162,7 @@ export function designSystemPersonalBindingReadable(
   return unattributedLocalPersonalDesignSystemAllowance(
     'design_system',
     binding,
-    scope.workspaceTypeAsserted,
+    scope.workspaceTypeVerified,
   );
 }
 
@@ -152,13 +174,13 @@ export function designSystemPersonalBindingReadable(
 export type DesignSystemPersonalBindingScope = {
   workspaceId: string;
   workspaceMemberId: string;
-  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
+  workspaceTypeVerified?: DesignSystemWorkspaceScopeType | null;
 };
 
 type DesignSystemUserReadScope = {
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
-  workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
+  workspaceTypeVerified?: DesignSystemWorkspaceScopeType | null;
 };
 
 /**
@@ -213,7 +235,7 @@ function designSystemUserReadOptions(
   if (designSystemPersonalBindingReadable(binding, {
     workspaceId,
     workspaceMemberId,
-    workspaceTypeAsserted: scope.workspaceTypeAsserted ?? null,
+    workspaceTypeVerified: scope.workspaceTypeVerified ?? null,
   })) {
     // Issue #6763: the binding is authoritative even when a re-finalize
     // dropped `workspaceId` from metadata.json — read the FS copy unscoped.
@@ -462,7 +484,7 @@ export function createDesignSystemServerServices({
   async function listAllDesignSystems(options: {
     workspaceId?: string | null;
     workspaceMemberId?: string | null;
-    workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
+    workspaceTypeVerified?: DesignSystemWorkspaceTypeVerifiedInput;
     exactTeam?: boolean;
   } = {}) {
     const builtIn = (await designSystems.listDesignSystems(paths.DESIGN_SYSTEMS_DIR)).map((s) => ({
@@ -535,6 +557,19 @@ export function createDesignSystemServerServices({
     const scopeLabel = exactWorkspaceId || exactMemberId
       ? `workspace=${exactWorkspaceId || '(none)'} member=${exactMemberId || '(none)'}`
       : 'signed-out';
+    // Settle the witness only if an unattributed personal binding of this
+    // exact workspace is in the catalog — the one shape the allowance can
+    // grant — so a scoped read of attributed systems never consults it.
+    const workspaceTypeVerified = await resolveWorkspaceTypeVerified(
+      options.workspaceTypeVerified,
+      () => catalog.some((system) => {
+        if (!db || !exactWorkspaceId || !exactMemberId) return false;
+        if (system.source !== 'user' || system.teamSynced === true) return false;
+        const binding = getWorkspaceResourceByResourceId(db, 'design_system', system.id);
+        return binding?.workspaceId === exactWorkspaceId
+          && isUnattributedLocalPersonalDesignSystemBinding(binding);
+      }),
+    );
     return catalog.filter((system) => {
       if (system.source !== 'user') return true;
       // A fully headerless request is the signed-out/local compatibility
@@ -573,7 +608,7 @@ export function createDesignSystemServerServices({
       if (designSystemPersonalBindingReadable(binding, {
         workspaceId: exactWorkspaceId,
         workspaceMemberId: exactMemberId,
-        workspaceTypeAsserted: options.workspaceTypeAsserted ?? null,
+        workspaceTypeVerified,
       })) {
         return true;
       }
@@ -591,7 +626,7 @@ export function createDesignSystemServerServices({
                 : !exactMemberId
                   ? 'memberless scope may only read unattributed bindings of its own workspace'
                   : isUnattributedLocalPersonalDesignSystemBinding(binding)
-                    ? 'unattributed binding requires an explicitly asserted personal scope'
+                    ? 'unattributed binding requires a verified personal workspace scope'
                     : 'personal binding belongs to another member',
       );
       return false;
@@ -692,7 +727,7 @@ export function createDesignSystemServerServices({
     options: {
       workspaceId?: string | null;
       workspaceMemberId?: string | null;
-      workspaceTypeAsserted?: DesignSystemWorkspaceScopeType | null;
+      workspaceTypeVerified?: DesignSystemWorkspaceTypeVerifiedInput;
     } = {},
   ) {
     // Product boundary: this validator identifies the item in the daemon's
@@ -794,7 +829,7 @@ export function createDesignSystemServerServices({
    * own, so reopening the editor reuses it instead of forking a
    * workspace-scoped copy? The design system's editing project inherits the
    * same ruling as its resource binding: a legacy memberless personal row in
-   * the caller's EXPLICITLY personal workspace is the local user's own
+   * the caller's VERIFIED personal workspace is the local user's own
    * editing project, not another member's — forking it would open an editor
    * whose edits run-time prompt loading (which reads `summary.projectId`)
    * never sees.
@@ -804,7 +839,7 @@ export function createDesignSystemServerServices({
     summary: DesignSystemSummary,
     workspaceId: string,
     workspaceMemberId: string,
-    workspaceTypeAsserted: DesignSystemWorkspaceScopeType | null,
+    workspaceTypeVerified: DesignSystemWorkspaceScopeType | null,
   ) {
     if (!binding || binding.workspaceId !== workspaceId || binding.resourceState === 'deleted') {
       return false;
@@ -813,7 +848,7 @@ export function createDesignSystemServerServices({
     return binding.visibility === 'personal'
       && (
         binding.createdByWorkspaceMemberId === workspaceMemberId
-        || unattributedLocalPersonalDesignSystemAllowance('design_system', binding, workspaceTypeAsserted)
+        || unattributedLocalPersonalDesignSystemAllowance('design_system', binding, workspaceTypeVerified)
       );
   }
 
@@ -831,13 +866,13 @@ export function createDesignSystemServerServices({
     // what allowed a Team operation to mutate a same-id Personal project.
     if (isScoped && (!workspaceId || !workspaceMemberId)) return null;
 
-    const workspaceTypeAsserted = options.workspaceTypeAsserted ?? null;
+    const workspaceTypeVerified = options.workspaceTypeVerified ?? null;
     const systems = await listAllDesignSystems(
       isScoped
         ? {
             workspaceId,
             workspaceMemberId,
-            workspaceTypeAsserted,
+            workspaceTypeVerified,
             ...(options.exactTeam !== undefined ? { exactTeam: options.exactTeam } : {}),
           }
         : {},
@@ -863,7 +898,7 @@ export function createDesignSystemServerServices({
         summary,
         workspaceId,
         workspaceMemberId,
-        workspaceTypeAsserted,
+        workspaceTypeVerified,
       );
       if (existing && !exactBinding) {
         projectId = workspaceScopedDesignSystemProjectId(id, workspaceId);
@@ -877,7 +912,7 @@ export function createDesignSystemServerServices({
           summary,
           workspaceId,
           workspaceMemberId,
-          workspaceTypeAsserted,
+          workspaceTypeVerified,
         )) {
           return null;
         }

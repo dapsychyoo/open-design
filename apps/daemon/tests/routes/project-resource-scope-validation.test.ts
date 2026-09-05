@@ -276,7 +276,7 @@ describe('project resource selection uses the persisted exact member', () => {
     expect(validateDesignSystem).toHaveBeenCalledWith('user:workspace-brand', {
       workspaceId: WORKSPACE_ID,
       workspaceMemberId: MEMBER_ID,
-      workspaceTypeAsserted: null,
+      workspaceTypeVerified: null,
     });
     expect(validateSkill).toHaveBeenCalledWith('workspace-skill', {
       workspaceId: WORKSPACE_ID,
@@ -323,7 +323,7 @@ describe('project resource selection uses the persisted exact member', () => {
     expect(validateDesignSystem).toHaveBeenCalledWith('user:private-brand', {
       workspaceId: WORKSPACE_ID,
       workspaceMemberId: MEMBER_ID,
-      workspaceTypeAsserted: null,
+      workspaceTypeVerified: null,
     });
     expect(validateSkill).toHaveBeenCalledWith('private-skill', {
       workspaceId: WORKSPACE_ID,
@@ -353,7 +353,7 @@ describe('project resource selection uses the persisted exact member', () => {
     expect(validateDesignSystem).toHaveBeenCalledWith('user:private-brand', {
       workspaceId: WORKSPACE_ID,
       workspaceMemberId: MEMBER_ID,
-      workspaceTypeAsserted: null,
+      workspaceTypeVerified: null,
     });
     expect(validateSkill).toHaveBeenCalledWith('private-skill', {
       workspaceId: WORKSPACE_ID,

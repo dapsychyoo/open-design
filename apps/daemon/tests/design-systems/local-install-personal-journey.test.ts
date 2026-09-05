@@ -20,9 +20,13 @@
 // selection -> project creation -> mutation -> run, for both a project created
 // from that selection and a legacy memberless project.
 //
-// Every allowance keys on the caller's EXPLICIT personal assertion. A
-// same-workspace caller that omits or contradicts the type stays refused at
-// every one of these gates — pinned alongside each happy path.
+// Every allowance keys on the caller's EXPLICIT personal assertion CONFIRMED
+// by the daemon's membership verification — on this local/dev install the
+// explicit headers are that authority; local-install-personal-verified-
+// workspace.test.ts covers the packaged runtime, where the membership
+// directory is. A same-workspace caller that omits or contradicts the type
+// stays refused at every one of these gates — pinned alongside each happy
+// path.
 
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';

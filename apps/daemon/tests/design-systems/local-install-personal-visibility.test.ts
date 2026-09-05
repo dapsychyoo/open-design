@@ -53,6 +53,7 @@ import {
   syncUserDesignSystemAssetsFromFiles,
 } from '../../src/design-systems/index.js';
 import { createDesignSystemServerServices } from '../../src/design-systems/server-services.js';
+import { verifyLocalWorkspaceRequestContext } from '../../src/collab/request-workspace-context.js';
 import { registerDesignSystemRoutes } from '../../src/routes/design-systems.js';
 import { registerStaticResourceRoutes } from '../../src/routes/static-resource.js';
 import {
@@ -191,11 +192,12 @@ async function startCatalogRoute(
   app.use(express.json());
   registerStaticResourceRoutes(app, {
     db: seeded.db,
-    // Presence alone selects the scoped catalog lane; the list route resolves
-    // the actual identity through the local header authority, like production.
-    verifyWorkspaceRequestAuthority: async () => {
-      throw new Error('catalog read must not verify remote Workspace authority');
-    },
+    // The list route resolves identity through the local header authority,
+    // like production. The legacy allowance's witness is the daemon's own
+    // request verifier, which on a local/dev install (no signed membership
+    // directory) is the production local verifier: the explicit headers are
+    // the complete, static authority there.
+    verifyWorkspaceRequestAuthority: async (req: unknown) => verifyLocalWorkspaceRequestContext(req),
     http: {
       createSseResponse: () => undefined,
       getPublicBaseUrl: () => '',
@@ -229,9 +231,8 @@ async function startDetailRoute(
     paths: seeded.paths,
     projectFiles: {} as never,
     projectStore: {} as never,
-    verifyWorkspaceRequestAuthority: async () => {
-      throw new Error('detail read must not verify remote Workspace authority');
-    },
+    // Same witness as the catalog fixture above: the production local verifier.
+    verifyWorkspaceRequestAuthority: async (req: unknown) => verifyLocalWorkspaceRequestContext(req),
     workspaceResources: {
       getWorkspaceResource: getWorkspaceResource as never,
       getWorkspaceResourceByResourceId: getWorkspaceResourceByResourceId as never,
@@ -330,8 +331,11 @@ describe('local install without a Workspace sign-in keeps its personal design sy
     // header is NOT an assertion of a personal workspace: a Team client that
     // simply omits the optional header must not inherit the personal-only
     // legacy allowance. The allowance keys on the caller's EXPLICIT
-    // `personal` assertion (`workspaceTypeAsserted`), so an unasserted scope
-    // stays on the strict pre-existing behavior (fail-closed).
+    // `personal` assertion confirmed by membership verification
+    // (`workspaceTypeVerified`), so an unasserted scope stays on the strict
+    // pre-existing behavior (fail-closed). The Vela-mode counterpart — a
+    // directory that says Team while the request claims personal — lives in
+    // local-install-personal-verified-workspace.test.ts.
     const seeded = await seedLocalInstall();
     const catalogUrl = await startCatalogRoute(seeded);
 
@@ -410,7 +414,7 @@ describe('local install without a Workspace sign-in keeps its personal design sy
     const scoped = await seeded.services.listAllDesignSystems({
       workspaceId: WORKSPACE,
       workspaceMemberId: LOCAL_MEMBER,
-      workspaceTypeAsserted: 'personal',
+      workspaceTypeVerified: 'personal',
     } as never);
     const headerless = await seeded.services.listAllDesignSystems({
       workspaceId: null,
@@ -444,7 +448,7 @@ describe('local install without a Workspace sign-in keeps its personal design sy
     const scoped = await seeded.services.listAllDesignSystems({
       workspaceId: WORKSPACE,
       workspaceMemberId: LOCAL_MEMBER,
-      workspaceTypeAsserted: 'personal',
+      workspaceTypeVerified: 'personal',
     } as never);
 
     expect(scoped.map((system) => system.id)).not.toContain('user:foreign');
